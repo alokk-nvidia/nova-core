@@ -83,6 +83,8 @@ impl NvdmHeader {
 /// These values come from a shared namespace across all GPU subsystems.
 /// Open RM reference: `arch/nvalloc/common/inc/nvdm_format.h`
 pub(crate) mod nvdm_type {
+    /// PRC (Product Reconfiguration Control) message.
+    pub(crate) const PRC: u8 = 0x13;
     /// Chain of Trust (FSP boot).
     pub(crate) const COT: u8 = 0x14;
     /// FSP/SEC2 command response.

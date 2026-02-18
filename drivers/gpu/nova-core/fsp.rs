@@ -29,8 +29,14 @@ use kernel::{
     },
 };
 
-use crate::mctp;
-use crate::regs;
+use crate::{
+    driver::Bar0,
+    falcon::{
+        fsp::Fsp as FspEngine,
+        Falcon, //
+    },
+    mctp, regs,
+};
 
 /// FSP Chain of Trust protocol version.
 ///
@@ -61,6 +67,26 @@ const fn fsp_secure_boot_timeout_ms(arch: crate::gpu::Architecture) -> i64 {
         crate::gpu::Architecture::BlackwellGB20x => 5000,
         _ => 4000,
     }
+}
+
+/// PRC (Product Reconfiguration Control) protocol constants.
+///
+/// PRC is an API system exposed through FSP's Management Partition that allows
+/// querying and modifying device configuration "knobs" without firmware updates.
+/// Each knob is identified by a unique object ID and controls a specific device
+/// behavior (e.g., vGPU mode, ECC, confidential computing).
+mod prc {
+    /// Sub-command to read a PRC knob value.
+    pub(super) const SUBCMD_READ: u8 = 0x0c;
+
+    /// PRC object ID for vGPU mode configuration (knob ID 41).
+    pub(super) const OBJECT_VGPU_MODE: u8 = 0x29;
+
+    /// Request the persistent knob value (saved in InfoROM, effective on next boot).
+    #[allow(dead_code)]
+    pub(super) const FLAG_PERSISTENT: u8 = 1 << 0;
+    /// Request the active knob value (currently effective this boot).
+    pub(super) const FLAG_ACTIVE: u8 = 1 << 1;
 }
 
 /// GSP FMC initialization parameters.
@@ -169,6 +195,60 @@ struct NvdmPayloadCommandResponse {
     error_code: u32,
 }
 
+// SAFETY: NvdmPayloadCommandResponse is a packed C struct with only integral fields.
+unsafe impl FromBytes for NvdmPayloadCommandResponse {}
+
+/// vGPU operating mode as reported by FSP via the PRC protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VgpuMode {
+    /// vGPU support is disabled on this GPU.
+    Disabled = 0,
+    /// vGPU support is enabled on this GPU.
+    Enabled = 1,
+}
+
+impl TryFrom<u16> for VgpuMode {
+    type Error = kernel::error::Error;
+
+    fn try_from(value: u16) -> Result<Self> {
+        match value {
+            0 => Ok(VgpuMode::Disabled),
+            1 => Ok(VgpuMode::Enabled),
+            _ => Err(EINVAL),
+        }
+    }
+}
+
+/// PRC message payload.
+///
+/// Sent to FSP to query or modify a device configuration knob.
+/// The response includes the common FSP response header followed by
+/// a [`NvdmPayloadPrcResponse`] with the knob's current state value.
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+struct NvdmPayloadPrc {
+    sub_message_id: u8,
+    flags: u8,
+    object_id: u8,
+    reserved: u8,
+}
+
+// SAFETY: NvdmPayloadPrc is a packed C struct with only integral fields.
+unsafe impl AsBytes for NvdmPayloadPrc {}
+
+/// PRC response payload containing the knob state value.
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+struct NvdmPayloadPrcResponse {
+    value_low: u8,
+    value_high: u8,
+    reserved1: u8,
+    reserved2: u8,
+}
+
+// SAFETY: NvdmPayloadPrcResponse is a packed C struct with only integral fields.
+unsafe impl FromBytes for NvdmPayloadPrcResponse {}
+
 /// NVDM (NVIDIA Device Management) COT (Chain of Trust) payload structure.
 /// This is the main message payload sent to FSP for Chain of Trust.
 #[repr(C, packed)]
@@ -222,6 +302,17 @@ struct FspCotMessage {
 // SAFETY: FspCotMessage is a packed C struct with only integral fields.
 unsafe impl AsBytes for FspCotMessage {}
 
+/// Complete FSP PRC message.
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+struct FspPrcMessage {
+    header: FspMessageHeader,
+    prc: NvdmPayloadPrc,
+}
+
+// SAFETY: FspPrcMessage is a packed C struct with only integral fields.
+unsafe impl AsBytes for FspPrcMessage {}
+
 /// Complete FSP response structure with MCTP and NVDM headers.
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
@@ -232,6 +323,18 @@ struct FspResponse {
 
 // SAFETY: FspResponse is a packed C struct with only integral fields.
 unsafe impl FromBytes for FspResponse {}
+
+/// Complete FSP PRC response including the knob state payload.
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+struct FspPrcResponse {
+    header: FspMessageHeader,
+    response: NvdmPayloadCommandResponse,
+    prc_data: NvdmPayloadPrcResponse,
+}
+
+// SAFETY: FspPrcResponse is a packed C struct with only integral fields.
+unsafe impl FromBytes for FspPrcResponse {}
 
 /// Trait implemented by types representing a message to send to FSP.
 ///
@@ -307,17 +410,69 @@ impl<'a> FmcBootArgs<'a> {
         self.fmc_boot_params.dma_handle()
     }
 }
+
+impl MessageToFsp for FspPrcMessage {
+    const NVDM_TYPE: u8 = mctp::nvdm_type::PRC;
+}
+
 /// FSP interface for Hopper/Blackwell GPUs.
 pub(crate) struct Fsp;
 
 impl Fsp {
+    /// Read vGPU mode from FSP using the PRC protocol.
+    ///
+    /// Queries FSP's Management Partition for the active vGPU mode knob value.
+    /// Returns [`VgpuMode::Enabled`] if vGPU support is active on this GPU,
+    /// [`VgpuMode::Disabled`] otherwise.
+    #[allow(dead_code)]
+    pub(crate) fn read_vgpu_mode(
+        dev: &device::Device<device::Bound>,
+        bar: &Bar0,
+        fsp_falcon: &Falcon<FspEngine>,
+    ) -> Result<VgpuMode> {
+        let msg = KBox::new(
+            FspPrcMessage {
+                header: FspMessageHeader::new(mctp::nvdm_type::PRC),
+                prc: NvdmPayloadPrc {
+                    sub_message_id: prc::SUBCMD_READ,
+                    flags: prc::FLAG_ACTIVE,
+                    object_id: prc::OBJECT_VGPU_MODE,
+                    reserved: 0,
+                },
+            },
+            GFP_KERNEL,
+        )?;
+
+        let response_buf = Self::send_sync_fsp(dev, bar, fsp_falcon, &*msg)?;
+
+        let prc_resp_size = core::mem::size_of::<FspPrcResponse>();
+        if response_buf.len() < prc_resp_size {
+            dev_err!(
+                dev,
+                "PRC response too small: {} bytes (expected {})\n",
+                response_buf.len(),
+                prc_resp_size
+            );
+            return Err(EIO);
+        }
+
+        let prc_response = FspPrcResponse::from_bytes(&response_buf[..prc_resp_size]).ok_or(EIO)?;
+
+        let raw_value = u16::from(prc_response.prc_data.value_low)
+            | (u16::from(prc_response.prc_data.value_high) << 8);
+
+        VgpuMode::try_from(raw_value).inspect_err(|_| {
+            dev_err!(dev, "unexpected vGPU mode value: {:#x}\n", raw_value);
+        })
+    }
+
     /// Wait for FSP secure boot completion.
     ///
     /// Polls the thermal scratch register until FSP signals boot completion
     /// or timeout occurs.
     pub(crate) fn wait_secure_boot(
         dev: &device::Device<device::Bound>,
-        bar: &crate::driver::Bar0,
+        bar: &Bar0,
         arch: crate::gpu::Architecture,
     ) -> Result {
         debug_assert!(
@@ -402,8 +557,8 @@ impl Fsp {
     /// to FSP, and waits for the response.
     pub(crate) fn boot_fmc(
         dev: &device::Device<device::Bound>,
-        bar: &crate::driver::Bar0,
-        fsp_falcon: &crate::falcon::Falcon<crate::falcon::fsp::Fsp>,
+        bar: &Bar0,
+        fsp_falcon: &Falcon<FspEngine>,
         args: &FmcBootArgs<'_>,
     ) -> Result {
         dev_dbg!(dev, "Starting FSP boot sequence for {}\n", args.chipset);

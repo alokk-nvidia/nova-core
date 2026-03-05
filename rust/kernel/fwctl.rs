@@ -44,6 +44,8 @@ pub enum DeviceType {
     Pds = bindings::fwctl_device_type_FWCTL_DEVICE_TYPE_PDS,
     /// Broadcom NetXtreme (bnxt) device.
     Bnxt = bindings::fwctl_device_type_FWCTL_DEVICE_TYPE_BNXT,
+    /// NVIDIA nova-core GPU device.
+    NovaCore = bindings::fwctl_device_type_FWCTL_DEVICE_TYPE_NOVA_CORE,
 }
 
 /// Scope of access for an RPC request.

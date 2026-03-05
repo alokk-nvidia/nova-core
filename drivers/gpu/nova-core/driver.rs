@@ -6,6 +6,7 @@ use kernel::{
         Bound,
         Core, //
     },
+    fwctl,
     io::resource,
     pci,
     pci::{
@@ -24,6 +25,10 @@ use kernel::{
 
 use crate::{
     api::NovaCoreApi,
+    fwctl::{
+        NovaCoreFwCtl,
+        NovaCoreFwCtlData, //
+    },
     gpu::Gpu, //
 };
 
@@ -35,6 +40,9 @@ pub(crate) struct NovaCore<'bound> {
     #[allow(clippy::type_complexity)]
     #[uses('gpu: invariant)]
     _reg: auxiliary::Registration<'gpu, ForLt!(NovaCoreApi<'_>)>,
+    /// Unregisters fwctl and drains its callbacks before GPU resources are dropped.
+    #[uses('gpu: invariant)]
+    _fwctl: fwctl::Registration<'gpu, NovaCoreFwCtl>,
     #[pin]
     #[uses('bar1)]
     pub(crate) gpu: Gpu<'bar>,
@@ -150,6 +158,21 @@ impl pci::Driver for NovaCoreDriver {
                     crate::MODULE_NAME,
                     NovaCoreApi::new(pdev, gpu),
                 )?
+            },
+
+            _fwctl: {
+                let fwctl_dev = fwctl::Device::<NovaCoreFwCtl>::new(pdev.as_ref())?;
+
+                // SAFETY: The device is newly allocated, unregistered, and parented to `pdev`.
+                // The self-referential borrow keeps `gpu` alive until fwctl is unregistered
+                // and its callbacks are drained. `NovaCore` is dropped before `pdev` unbinds.
+                unsafe {
+                    fwctl::Registration::new(
+                        pdev.as_ref(),
+                        &fwctl_dev,
+                        NovaCoreFwCtlData::new(gpu.get_ref().cmdq()),
+                    )?
+                }
             },
         })
     }

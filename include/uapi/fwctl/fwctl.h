@@ -46,6 +46,7 @@ enum fwctl_device_type {
 	FWCTL_DEVICE_TYPE_CXL = 2,
 	FWCTL_DEVICE_TYPE_BNXT = 3,
 	FWCTL_DEVICE_TYPE_PDS = 4,
+	FWCTL_DEVICE_TYPE_NOVA_CORE = 8,
 };
 
 /**

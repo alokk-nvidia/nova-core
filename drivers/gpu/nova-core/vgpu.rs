@@ -46,6 +46,16 @@ mod scrubber;
 pub(crate) mod vgpu_api;
 mod vram;
 
+pub(crate) use fw::{
+    GMCAPI_CMD_ADD_VGPU_TYPE,
+    GMCAPI_CMD_ASSIGN_VGPU_TYPE,
+    GMCAPI_CMD_DEASSIGN_VGPU_TYPE,
+    GMCAPI_CMD_QUERY_ASSIGNED_VF_VGPU_TYPE,
+    GMCAPI_CMD_QUERY_CREATABLE_VGPU_TYPES,
+    GMCAPI_CMD_QUERY_SUPPORTED_VGPU_TYPES,
+    GMCAPI_CMD_QUERY_VGPU_PROPERTIES, //
+};
+
 /// vGPU state detected during GPU construction.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum VgpuState {

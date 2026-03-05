@@ -6,6 +6,7 @@ use kernel::{
         Bound,
         Core, //
     },
+    fwctl,
     io::resource,
     pci,
     pci::{
@@ -24,6 +25,10 @@ use kernel::{
 
 use crate::{
     api::NovaCoreApi,
+    fwctl::{
+        NovaCoreFwCtl,
+        NovaCoreFwCtlData, //
+    },
     gpu::Gpu, //
 };
 
@@ -34,6 +39,8 @@ static AUXILIARY_ID_COUNTER: Atomic<u32> = Atomic::new(0);
 pub(crate) struct NovaCore<'bound> {
     #[allow(clippy::type_complexity)]
     _reg: auxiliary::Registration<'bound, ForLt!(NovaCoreApi<'_>)>,
+    /// Unregisters fwctl and drains its callbacks before GPU resources are dropped.
+    _fwctl: fwctl::Registration<'bound, NovaCoreFwCtl>,
     #[pin]
     pub(crate) gpu: Gpu<'bound>,
     bar: pci::Bar<'bound, BAR0_SIZE>,
@@ -165,6 +172,26 @@ impl pci::Driver for NovaCoreDriver {
                         AUXILIARY_ID_COUNTER.fetch_add(1, Relaxed),
                         crate::MODULE_NAME,
                         NovaCoreApi { gpu, pdev },
+                    )?
+                }
+            },
+
+            _fwctl: {
+                // SAFETY: `gpu` is initialized at its final pinned address. `_fwctl` is
+                // declared before `gpu`, so unregistering fwctl drains callbacks before the
+                // GPU is dropped. Initializer cleanup also unregisters it first, since this
+                // registration is initialized last. The private registration is never leaked.
+                let gpu = unsafe { &*core::ptr::from_ref(gpu.as_ref().get_ref()) };
+                let fwctl_dev = fwctl::Device::<NovaCoreFwCtl>::new(pdev.as_ref())?;
+
+                // SAFETY: The device is newly allocated, unregistered, and parented to `pdev`.
+                // The registration borrows the pinned GPU as described above, and its Drop
+                // runs before the parent device unbinds.
+                unsafe {
+                    fwctl::Registration::new(
+                        pdev.as_ref(),
+                        &fwctl_dev,
+                        NovaCoreFwCtlData::new(gpu.cmdq()),
                     )?
                 }
             },

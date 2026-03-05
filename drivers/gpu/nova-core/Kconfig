@@ -4,8 +4,10 @@ config NOVA_CORE
 	depends on PCI
 	depends on RUST
 	depends on !CPU_BIG_ENDIAN
+	depends on FWCTL=y
 	select AUXILIARY_BUS
 	select GPU_BUDDY
+	select RUST_FWCTL_ABSTRACTIONS
 	select RUST_FW_LOADER_ABSTRACTIONS
 	default n
 	help

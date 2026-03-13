@@ -280,6 +280,7 @@ impl FirmwareObject<BooterFirmware, Unsigned> {
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub(crate) enum BooterKind {
+    Scrubber,
     Loader,
     #[expect(unused)]
     Unloader,
@@ -297,6 +298,7 @@ impl BooterFirmware {
         bar: &Bar0,
     ) -> Result<Self> {
         let fw_name = match kind {
+            BooterKind::Scrubber => "scrubber",
             BooterKind::Loader => "booter_load",
             BooterKind::Unloader => "booter_unload",
         };

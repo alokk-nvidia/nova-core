@@ -473,6 +473,7 @@ impl<const N: usize> ModInfoBuilder<N> {
             .make_entry_file(name, "booter_unload")
             .make_entry_file(name, "bootloader")
             .make_entry_file(name, "gsp")
+            .make_entry_file(name, "scrubber")
             .make_entry_file(name, "ucodes");
 
         if chipset.needs_fwsec_bootloader() {

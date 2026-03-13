@@ -225,6 +225,20 @@ impl NV_PFB_PRI_MMU_WPR2_ADDR_HI {
     }
 }
 
+register! {
+    /// BSI secure scratch 15: scrubber handoff status.
+    pub(crate) NV_PGC6_BSI_SECURE_SCRATCH_15(u32) @ 0x001180fc {
+        31:29   scrubber_handoff;
+    }
+}
+
+impl NV_PGC6_BSI_SECURE_SCRATCH_15 {
+    /// Returns `true` if scrubber has completed.
+    pub(crate) fn scrubber_completed(self) -> bool {
+        self.scrubber_handoff() >= 0x3
+    }
+}
+
 // PGSP
 
 register! {

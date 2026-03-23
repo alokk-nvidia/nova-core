@@ -58,8 +58,8 @@ const CMD_VGPU_CLEANUP: u32 = 0x2080_4008;
 
 /// Prebuilt NVA081_CTRL_VGPU_INFO for L40-1Q (type 871).
 const L40_1Q_VGPU_INFO: &[u8] = include_bytes!("l40_1q.bin");
-const NVA081_CTRL_VGPU_INFO_SIZE: usize = 5224;
-const NVA081_MAX_VGPU_TYPES_PER_PGPU: usize = 64;
+const NVA081_CTRL_VGPU_INFO_SIZE: usize = 5424;
+const NVA081_MAX_VGPU_TYPES_PER_PGPU: usize = 128;
 
 /// Magic value GSP writes to ctrl buffer on successful plugin bootload.
 const GSP_PLUGIN_BOOTLOADED: u32 = 0x4E65_4A6F;

@@ -2,7 +2,7 @@
 
 #![allow(dead_code)]
 
-use kernel::{device, io::poll::read_poll_timeout, pci, prelude::*, time::Delta};
+use kernel::{device, io::Io, io::poll::read_poll_timeout, pci, prelude::*, time::Delta};
 
 use crate::{
     driver::{Bar0, Bar1},
@@ -198,7 +198,6 @@ pub(crate) struct GspConfig {
     pub(crate) total_fbmem_size: u64,
 }
 
-/// Fixed layout of GSP plugin communication buffers within the management heap.
 pub(crate) struct CommBuffLayout {
     pub(crate) total_size: u64,
     pub(crate) init_task_log_offset: u64,
@@ -571,7 +570,8 @@ impl Vgpu {
         bar: &Bar0,
         pdev: &pci::Device<device::Bound>,
     ) -> Result<usize> {
-        let dbdf = u32::from(pdev.dev_id());
+        // Use VF dbdf: PF bus/dev with function=4 (first VF).
+        let dbdf = u32::from(pdev.dev_id()) | 4;
 
         let instance = VgpuInstance {
             id: 0,
@@ -732,4 +732,350 @@ impl Vgpu {
 
         Ok(())
     }
+
+    /// Set up the CPU -> GSP plugin RPC channel and send initial configuration.
+    ///
+    /// Negotiates the stable RPC version, then sends config params via NVKV encoding.
+    /// Must be called after bootload_plugin and wait_plugin_ready.
+    pub(crate) fn setup_plugin_rpc(
+        &self,
+        instance: &VgpuInstance,
+        bar_user: &mut BarUser,
+        mm_gpu: &GpuMm,
+        bar0: &Bar0,
+        bar1: &Bar1,
+        h_client: u32,
+    ) -> Result {
+        let mut rpc = PluginRpc::new(
+            instance,
+            bar_user,
+            mm_gpu,
+            bar1,
+            self.comm_layout.total_size,
+        )?;
+
+        rpc.call(bar0, instance.gfid, RpcMsg::VersionNegotiation, &mut [])?;
+
+        let vgpu_type = self.vgpu_types.get(instance.vgpu_type_idx).ok_or(EINVAL)?;
+        let nvkv_data = encode_config_params_nvkv(instance, vgpu_type, h_client)?;
+        let data_bytes = nvkv_data.as_bytes();
+
+        // Use a msg-buffer-sized buf so recv_response reads back the full debug dump.
+        let mut buf = KVVec::from_elem(0u8, VGPU_GSP_MESSAGE_REGION_SIZE as usize, GFP_KERNEL)?;
+        buf.as_mut_slice()[..data_bytes.len()].copy_from_slice(data_bytes);
+
+        rpc.send_request(bar0, instance.gfid, RpcMsg::SetupConfigParamsAndInit, buf.as_slice())?;
+        let result = rpc.recv_response(buf.as_mut_slice())?;
+
+        // Firmware writes debug dump to msg_buff: [magic=0xDEBD0001][stable_rpc_mode][config_params...]
+        dump_config_params_response(buf.as_slice());
+
+        if result != 0 {
+            kernel::pr_err!("vgpu: RPC SetupConfigParamsAndInit failed, result_code={:#x}\n", result);
+            return Err(EIO);
+        }
+        Ok(())
+    }
+}
+
+// --- CPU -> GSP Plugin RPC -------------------------------------------------
+
+/// Byte offsets within VGPU_CPU_GSP_CTRL_BUFF_REGION.
+mod ctrl_buf_off {
+    pub(super) const VERSION: usize = 0;
+    pub(super) const MESSAGE_TYPE: usize = 4;
+    pub(super) const MESSAGE_SEQ_NUM: usize = 8;
+    pub(super) const RESPONSE_BUFF_OFFSET: usize = 16;
+    pub(super) const MESSAGE_BUFF_OFFSET: usize = 24;
+    pub(super) const MIGRATION_BUFF_OFFSET: usize = 32;
+    pub(super) const ERROR_BUFF_OFFSET: usize = 40;
+}
+
+/// Byte offsets within VGPU_CPU_GSP_RESPONSE_BUFF_REGION.
+mod resp_buf_off {
+    pub(super) const MESSAGE_SEQ_NUM_PROCESSED: usize = 4;
+    pub(super) const RESULT_CODE: usize = 8;
+}
+
+/// RPC message types (mirrors NV_VGPU_CPU_RPC_MSG_*).
+#[repr(u32)]
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+enum RpcMsg {
+    VersionNegotiation = 1,
+    SetupConfigParamsAndInit = 2,
+    Reset = 3,
+}
+
+/// Doorbell register offset within BAR0 for the vGPU plugin.
+const DOORBELL_BASE: usize = 0xb8_0000 + 0x2200;
+
+/// ctrl_buff->version: version 1 with STABLE_RPC capability flag.
+const VGPU_CPU_GSP_CTRL_BUFF_VERSION: u32 = 0x8000_0001;
+
+/// RPC response timeout and poll interval.
+const RPC_TIMEOUT: kernel::time::Delta = kernel::time::Delta::from_secs(120);
+const RPC_POLL_INTERVAL: kernel::time::Delta = kernel::time::Delta::from_millis(1);
+
+/// CPU -> GSP plugin RPC channel state.
+struct PluginRpc<'a> {
+    access: mm::bar_user::BarAccess<'a>,
+    ctrl_off: usize,
+    resp_off: usize,
+    msg_off: usize,
+    msg_seq_num: u32,
+}
+
+impl<'a> PluginRpc<'a> {
+    fn new(
+        instance: &VgpuInstance,
+        bar_user: &'a mut BarUser,
+        mm_gpu: &'a GpuMm,
+        bar1: &'a Bar1,
+        comm_size: u64,
+    ) -> Result<Self> {
+        let mgmt = instance.mgmt_heap.as_ref().ok_or(EINVAL)?;
+        let base = mgmt.addr();
+        let page_size: u64 = PAGE_SIZE.into_safe_cast();
+        let num_pages = ((comm_size + page_size - 1) / page_size) as usize;
+
+        let mut pfns = KVec::new();
+        for i in 0..num_pages {
+            let i_u64: u64 = i.into_safe_cast();
+            pfns.push(
+                Pfn::from(VramAddress::new(base + i_u64 * page_size)),
+                GFP_KERNEL,
+            )?;
+        }
+
+        let access = bar_user.map(mm_gpu, bar1, &pfns, true)?;
+
+        let ctrl_off: usize = 0;
+        let resp_off = VGPU_GSP_CTRL_REGION_SIZE as usize;
+        let msg_off = resp_off + VGPU_GSP_RESPONSE_REGION_SIZE as usize;
+        let migration_off = msg_off + VGPU_GSP_MESSAGE_REGION_SIZE as usize;
+        let error_off = migration_off + VGPU_GSP_MIGRATION_REGION_SIZE as usize;
+        access.try_write32(VGPU_CPU_GSP_CTRL_BUFF_VERSION, ctrl_off + ctrl_buf_off::VERSION)?;
+        access.try_write64(resp_off as u64, ctrl_off + ctrl_buf_off::RESPONSE_BUFF_OFFSET)?;
+        access.try_write64(msg_off as u64, ctrl_off + ctrl_buf_off::MESSAGE_BUFF_OFFSET)?;
+        access.try_write64(migration_off as u64, ctrl_off + ctrl_buf_off::MIGRATION_BUFF_OFFSET)?;
+        access.try_write64(error_off as u64, ctrl_off + ctrl_buf_off::ERROR_BUFF_OFFSET)?;
+
+        Ok(Self {
+            access,
+            ctrl_off,
+            resp_off,
+            msg_off,
+            msg_seq_num: 0,
+        })
+    }
+
+    fn trigger_doorbell(&self, bar0: &Bar0, gfid: Gfid) {
+        let v: u32 = gfid.0 * 32 + 17;
+        bar0.write32(v, DOORBELL_BASE);
+        let _ = bar0.read32(DOORBELL_BASE);
+    }
+
+    fn send_request(
+        &mut self,
+        bar0: &Bar0,
+        gfid: Gfid,
+        msg_type: RpcMsg,
+        data: &[u8],
+    ) -> Result {
+        // Zero the message buffer
+        let mut z = 0usize;
+        while z < VGPU_GSP_MESSAGE_REGION_SIZE as usize {
+            self.access.try_write32(0, self.msg_off + z)?;
+            z += 4;
+        }
+
+        let mut off = 0usize;
+        while off + 4 <= data.len() {
+            let val = u32::from_ne_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]]);
+            self.access.try_write32(val, self.msg_off + off)?;
+            off += 4;
+        }
+        if off < data.len() {
+            let mut tail = [0u8; 4];
+            tail[..data.len() - off].copy_from_slice(&data[off..]);
+            let val = u32::from_ne_bytes(tail);
+            self.access.try_write32(val, self.msg_off + off)?;
+        }
+
+        self.access.try_write32(msg_type as u32, self.ctrl_off + ctrl_buf_off::MESSAGE_TYPE)?;
+        self.msg_seq_num += 1;
+        self.access.try_write32(self.msg_seq_num, self.ctrl_off + ctrl_buf_off::MESSAGE_SEQ_NUM)?;
+
+        self.trigger_doorbell(bar0, gfid);
+        Ok(())
+    }
+
+    fn recv_response(&self, data: &mut [u8]) -> Result<u32> {
+        let expected = self.msg_seq_num;
+
+        kernel::io::poll::read_poll_timeout(
+            || self.access.try_read32(self.resp_off + resp_buf_off::MESSAGE_SEQ_NUM_PROCESSED),
+            |val| *val == expected,
+            RPC_POLL_INTERVAL,
+            RPC_TIMEOUT,
+        )?;
+
+        let result = self.access.try_read32(self.resp_off + resp_buf_off::RESULT_CODE)?;
+
+        let mut off = 0usize;
+        while off + 4 <= data.len() {
+            let val = self.access.try_read32(self.msg_off + off)?;
+            data[off..off + 4].copy_from_slice(&val.to_ne_bytes());
+            off += 4;
+        }
+
+        Ok(result)
+    }
+
+    fn call(
+        &mut self,
+        bar0: &Bar0,
+        gfid: Gfid,
+        msg_type: RpcMsg,
+        data: &mut [u8],
+    ) -> Result {
+        self.send_request(bar0, gfid, msg_type, data)?;
+        let result = self.recv_response(data)?;
+        if result != 0 {
+            kernel::pr_err!("vgpu: RPC {:?} failed, result_code={:#x}\n", msg_type, result);
+            return Err(EIO);
+        }
+        Ok(())
+    }
+
+}
+
+// --- NVKV Encoder ----------------------------------------------------------
+
+const NVKV_OPCODE_IMM32: u64 = 0x0;
+const NVKV_OPCODE_SEQ64: u64 = 0x2;
+const NVKV_OPCODE_ARRAY8: u64 = 0x3;
+
+const fn nvkv_imm32(key: u64, val: u32) -> u64 {
+    (NVKV_OPCODE_IMM32 << 28) | (key & 0xFFFF) | ((val as u64) << 32)
+}
+const fn nvkv_seq64(key: u64, count: u32) -> u64 {
+    (NVKV_OPCODE_SEQ64 << 28) | (key & 0xFFFF) | ((count as u64) << 32)
+}
+const fn nvkv_array8(key: u64, count: u32) -> u64 {
+    (NVKV_OPCODE_ARRAY8 << 28) | (key & 0xFFFF) | ((count as u64) << 32)
+}
+
+struct NvkvWriter {
+    buf: KVec<u64>,
+}
+
+impl NvkvWriter {
+    fn new() -> Result<Self> {
+        Ok(Self { buf: KVec::new() })
+    }
+    fn push(&mut self, val: u64) -> Result {
+        self.buf.push(val, GFP_KERNEL)?;
+        Ok(())
+    }
+    fn put_u32(&mut self, key: u64, val: u32) -> Result {
+        self.push(nvkv_imm32(key, val))
+    }
+    fn put_u64(&mut self, key: u64, val: u64) -> Result {
+        self.push(nvkv_seq64(key, 1))?;
+        self.push(val)
+    }
+    fn put_bytes(&mut self, key: u64, data: &[u8]) -> Result {
+        self.push(nvkv_array8(key, data.len() as u32))?;
+        let mut off = 0usize;
+        while off < data.len() {
+            let mut qword = [0u8; 8];
+            let end = (off + 8).min(data.len());
+            qword[..end - off].copy_from_slice(&data[off..end]);
+            self.push(u64::from_ne_bytes(qword))?;
+            off += 8;
+        }
+        Ok(())
+    }
+    fn as_bytes(&self) -> &[u8] {
+        let ptr = self.buf.as_slice().as_ptr() as *const u8;
+        let len = self.buf.len() * 8;
+        // SAFETY: u64 slice is contiguous and properly aligned.
+        unsafe { core::slice::from_raw_parts(ptr, len) }
+    }
+}
+
+fn encode_config_params_nvkv(
+    instance: &VgpuInstance,
+    vgpu_type: &VgpuType,
+    h_client: u32,
+) -> Result<NvkvWriter> {
+    let mut w = NvkvWriter::new()?;
+    w.put_bytes(0x001, &[0u8; 16])?;          // VGPU_UUID
+    w.put_u32(0x002, instance.dbdf.0)?;        // DBDF
+    w.put_u32(0x003, 0)?;                      // DRIVER_VM_VF_DBDF
+    w.put_u32(0x004, 0)?;                        // VGPU_DEVICE_INSTANCE_ID
+    w.put_u32(0x005, vgpu_type.vgpu_type_id)?; // VGPU_TYPE
+    w.put_u32(0x006, instance.vm_pid)?;        // VM_PID
+    w.put_u32(0x010, 0)?;                        // SWIZZ_ID
+    w.put_u32(0x011, instance.num_chid)?;      // NUM_CHANNELS
+    w.put_u32(0x012, 3)?;                      // NUM_PLUGIN_CHANNELS
+    w.put_u32(0x020, 0)?;                      // VMM_CAP
+    w.put_u32(0x021, 0x4000)?;                 // MIGRATION_FEATURE
+    w.put_u32(0x022, 4)?;                      // HYPERVISOR_TYPE (KVM)
+    w.put_u32(0x023, 2)?;                      // HOST_CPU_ARCH (X86_64)
+    w.put_u64(0x024, 4096)?;                   // HOST_PAGE_SIZE
+    w.put_u32(0x033, 1)?;                      // ENABLE_UVM
+    w.put_u32(0x034, 0)?;                      // LINUX_INTERRUPT_OPT
+    w.put_u32(0x035, 1)?;                      // VMM_MIGRATION_SUPPORTED
+    w.put_u32(0x037, 0)?;                      // ENABLE_CONSOLE_VNC
+    w.put_u32(0x038, 0)?;                      // USE_NON_STALL_LINUX_EVENTS
+    w.put_u32(0x040, 0)?;                      // PLACEMENT_ID
+    w.put_u32(0x042, 0)?;                      // CHANNEL_USAGE_THRESHOLD_PCT
+    w.put_u32(0x050, 0)?;                      // DEVICE_VM
+    Ok(w)
+}
+
+// --- Debug dump from firmware -----------------------------------------------
+// Firmware writes to msg_buff: [magic=0xDEBD0001][stable_rpc_mode][config_params struct]
+// config_params struct offsets match NV_VGPU_CPU_RPC_DATA_COPY_CONFIG_PARAMS.
+
+fn dump_config_params_response(buf: &[u8]) {
+    fn r32(b: &[u8], off: usize) -> u32 {
+        if off + 4 <= b.len() {
+            u32::from_ne_bytes([b[off], b[off+1], b[off+2], b[off+3]])
+        } else { 0 }
+    }
+    fn r64(b: &[u8], off: usize) -> u64 {
+        if off + 8 <= b.len() {
+            u64::from_ne_bytes([b[off], b[off+1], b[off+2], b[off+3],
+                                b[off+4], b[off+5], b[off+6], b[off+7]])
+        } else { 0 }
+    }
+
+    let magic = r32(buf, 0);
+    if magic != 0xDEBD_0002 {
+        kernel::pr_err!("vgpu: no debug dump in msg_buff (magic={:#x})\n", magic);
+        return;
+    }
+    let mode = r32(buf, 4);
+    let stage = r32(buf, 8);
+    let err = r32(buf, 12);
+    // Config params start at offset 16
+    let p = &buf[16..];
+
+    kernel::pr_info!("vgpu: GSP stage={} err={} stable_rpc={}: dbdf={:#x} instId={:#x} type={} pid={} swizz={:#x} ch={} pch={} hyp={} page={} uvm={}\n",
+        stage, err, mode,
+        r32(p, 16),  // dbdf
+        r32(p, 24),  // vgpu_device_instance_id
+        r32(p, 28),  // vgpu_type
+        r32(p, 32),  // vm_pid
+        r32(p, 36),  // swizz_id
+        r32(p, 40),  // num_channels
+        r32(p, 44),  // num_plugin_channels
+        r32(p, 56),  // hypervisor_type
+        r64(p, 64),  // host_page_size
+        p.get(75).copied().unwrap_or(0),  // enable_uvm
+    );
 }

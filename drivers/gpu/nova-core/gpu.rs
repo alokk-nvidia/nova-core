@@ -530,6 +530,63 @@ impl Gpu {
         Ok(())
     }
 
+    /// Run mock vGPU bootload test if vGPU is enabled.
+    ///
+    /// Uploads a hardcoded L40-1Q vGPU type, initializes post-boot state,
+    /// creates a test instance, and verifies the GSP plugin writes the
+    /// bootload completion marker.
+    pub(crate) fn mock_bootload(self: Pin<&mut Self>, pdev: &pci::Device<device::Bound>) -> Result {
+        if !self.vgpu.vgpu_enabled {
+            return Ok(());
+        }
+
+        if self.bar_user.is_none() {
+            dev_dbg!(
+                pdev,
+                "skipping mock bootload: BAR1 user unavailable (V3 MMU)\n"
+            );
+            return Ok(());
+        }
+
+        // SAFETY: We only access non-pinned fields (vgpu, bar_user) through
+        // the pin projection. The pinned fields (gsp, mm) are accessed via
+        // shared references.
+        let this = unsafe { self.get_unchecked_mut() };
+        let bar0 = this.bar.access(pdev.as_ref())?;
+        let bar1 = this.bar1.access(pdev.as_ref())?;
+        let cmdq = &this.gsp.cmdq;
+        let mm = &this.mm;
+        let total_vram = mm.buddy()?.size();
+
+        this.vgpu
+            .upload_vgpu_type(cmdq, bar0)
+            .inspect_err(|_| dev_err!(pdev, "failed to upload vGPU type to GSP\n"))?;
+
+        this.vgpu
+            .init_post_gsp_boot(cmdq, bar0, total_vram)
+            .inspect_err(|_| dev_err!(pdev, "vGPU post-boot init failed\n"))?;
+
+        let comm_size = this.vgpu.comm_layout.total_size;
+
+        this.vgpu
+            .mock_create_instance(mm, cmdq, bar0, pdev)
+            .inspect_err(|_| dev_err!(pdev, "failed to create mock vGPU instance\n"))?;
+
+        let bar_user = this.bar_user.as_mut().ok_or(ENODEV)?;
+        let idx = this.vgpu.instances.len() - 1;
+        let instance = &this.vgpu.instances[idx];
+        Vgpu::wait_plugin_ready(instance, bar_user, mm, bar1, comm_size)
+            .inspect_err(|_| dev_err!(pdev, "vGPU plugin bootload timed out\n"))?;
+
+        dev_info!(
+            pdev,
+            "vGPU plugin bootloaded successfully (magic {:#x})\n",
+            0x4E65_4A6Fu32
+        );
+
+        Ok(())
+    }
+
     #[cfg(CONFIG_NOVA_MM_SELFTESTS)]
     fn run_mm_selftests(self: Pin<&mut Self>, pdev: &pci::Device<device::Bound>) -> Result {
         let mmu_version = MmuVersion::from(self.spec.chipset.arch());

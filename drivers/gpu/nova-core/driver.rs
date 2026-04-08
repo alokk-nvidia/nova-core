@@ -84,7 +84,11 @@ impl pci::Driver for NovaCore {
 
             Ok(try_pin_init!(Self {
                 gpu <- Gpu::new(pdev, bar.clone(), bar1, bar.access(pdev.as_ref())?),
-                _: { gpu.run_selftests(pdev)? },
+                _: {
+                    let mut gpu = gpu;
+                    gpu.as_mut().run_selftests(pdev)?;
+                    gpu.as_mut().mock_bootload(pdev)?;
+                },
                 _reg <- auxiliary::Registration::new(
                     pdev.as_ref(),
                     c"nova-drm",

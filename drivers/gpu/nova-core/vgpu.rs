@@ -561,6 +561,34 @@ impl Vgpu {
         Ok(())
     }
 
+    /// Create a mock vGPU instance for bootload testing.
+    ///
+    /// Uses `Gfid(1)` (VF0) and the first registered vGPU type.
+    pub(crate) fn mock_create_instance(
+        &mut self,
+        mm: &GpuMm,
+        cmdq: &Cmdq,
+        bar: &Bar0,
+        pdev: &pci::Device<device::Bound>,
+    ) -> Result<usize> {
+        let dbdf = u32::from(pdev.dev_id());
+
+        let instance = VgpuInstance {
+            id: 0,
+            gfid: Gfid(1),
+            dbdf: Dbdf(dbdf),
+            vgpu_type_idx: 0,
+            vm_pid: 1,
+            chid_offset: 0,
+            num_chid: 0,
+            num_plugin_channels: 0,
+            fbmem_heap: None,
+            mgmt_heap: None,
+            active: false,
+        };
+        self.create_instance(mm, cmdq, bar, instance)
+    }
+
     /// Upload a hardcoded L40-1Q vGPU type to GSP and record it locally.
     ///
     /// Builds `NV2080_CTRL_VGPU_MGR_INTERNAL_PGPU_ADD_VGPU_TYPE_PARAMS` with a

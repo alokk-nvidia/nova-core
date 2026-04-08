@@ -413,6 +413,7 @@ impl Gpu {
                         sec2_falcon,
                         fsp_falcon: None,
                         vgpu_requested: vgpu.vgpu_requested,
+                        vmmu_segment_size: 0,
                         vf_partition_count: if vgpu.vgpu_requested {
                             if vgpu.total_vfs > u16::from(MAX_PARTITIONS_WITH_GFID_32VM) {
                                 MAX_PARTITIONS_WITH_GFID
@@ -428,6 +429,7 @@ impl Gpu {
                         &gsp_fw_blob, gsp_fw_path,
                     )?;
                     vgpu.vgpu_enabled = ctx.vgpu_requested;
+                    vgpu.gsp_config.vmmu_segment_size = ctx.vmmu_segment_size;
 
                     dev_info!(
                         pdev.as_ref(),
@@ -442,9 +444,23 @@ impl Gpu {
                 mm <- {
                     let usable_vram = &gsp_static_info.usable_fb_region;
                     let pramin_vram_region = 0..gsp_static_info.total_fb_end;
+
+                    let mut vram_start = usable_vram.start;
+                    let mut vram_size = usable_vram.end - usable_vram.start;
+
+                    // Align buddy base to VMMU segment size so that
+                    // power-of-2 buddy allocations produce VMMU-aligned
+                    // absolute addresses without over-allocation.
+                    let seg = vgpu.gsp_config.vmmu_segment_size;
+                    if seg > 0 {
+                        let aligned = (vram_start + seg - 1) & !(seg - 1);
+                        vram_size -= aligned - vram_start;
+                        vram_start = aligned;
+                    }
+
                     GpuMm::new(devres_bar.clone(), GpuBuddyParams {
-                        base_offset: usable_vram.start,
-                        size: usable_vram.end - usable_vram.start,
+                        base_offset: vram_start,
+                        size: vram_size,
                         chunk_size: Alignment::new::<SZ_4K>(),
                     }, pramin_vram_region)?
                 },

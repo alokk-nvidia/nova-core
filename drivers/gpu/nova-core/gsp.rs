@@ -67,6 +67,8 @@ pub(crate) struct GspBootContext<'a> {
     pub(crate) fsp_falcon: Option<Falcon<FspFalcon>>,
     pub(crate) vgpu_requested: bool,
     pub(crate) vf_partition_count: u8,
+    /// VMMU segment size in bytes (populated by boot when vGPU is enabled).
+    pub(crate) vmmu_segment_size: u64,
 }
 
 impl GspBootContext<'_> {

@@ -556,6 +556,23 @@ impl super::Gsp {
             Err(e) => dev_warn!(dev, "GPU name unavailable: {:?}\n", e),
         }
 
+        // Query VMMU segment size for vGPU FB alignment.
+        if ctx.vgpu_requested {
+            const CMD_GET_VMMU_SEGMENT_SIZE: u32 = 0x2080_017e;
+            let mut vmmu_params = [0u8; 8];
+            let response = self.cmdq.send_gmc_and_receive(
+                bar,
+                CMD_GET_VMMU_SEGMENT_SIZE,
+                &vmmu_params,
+                8192,
+            )?;
+            if response.status == 0 {
+                let copy_len = response.payload.len().min(8);
+                vmmu_params[..copy_len].copy_from_slice(&response.payload[..copy_len]);
+                ctx.vmmu_segment_size = u64::from_ne_bytes(vmmu_params);
+            }
+        }
+
         Ok(info)
     }
 

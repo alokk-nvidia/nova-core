@@ -415,6 +415,45 @@ impl Vgpu {
         }
     }
 
+    /// Initialize GSP communication buffer layout from fixed region sizes.
+    pub(crate) fn init_comm_layout(&mut self) {
+        self.comm_layout.total_size = VGPU_GSP_CTRL_REGION_SIZE
+            + VGPU_GSP_RESPONSE_REGION_SIZE
+            + VGPU_GSP_MESSAGE_REGION_SIZE
+            + VGPU_GSP_MIGRATION_REGION_SIZE
+            + VGPU_GSP_ERROR_REGION_SIZE
+            + VGPU_GSP_INIT_TASK_LOG_SIZE
+            + VGPU_GSP_VGPU_TASK_LOG_SIZE
+            + VGPU_GSP_KERNEL_LOG_SIZE;
+        self.comm_layout.init_task_log_offset = VGPU_GSP_CTRL_REGION_SIZE
+            + VGPU_GSP_RESPONSE_REGION_SIZE
+            + VGPU_GSP_MESSAGE_REGION_SIZE
+            + VGPU_GSP_MIGRATION_REGION_SIZE
+            + VGPU_GSP_ERROR_REGION_SIZE;
+        self.comm_layout.init_task_log_size = VGPU_GSP_INIT_TASK_LOG_SIZE;
+        self.comm_layout.vgpu_task_log_size = VGPU_GSP_VGPU_TASK_LOG_SIZE;
+        self.comm_layout.kernel_log_size = VGPU_GSP_KERNEL_LOG_SIZE;
+    }
+
+    /// Initialize post-boot vGPU state.
+    ///
+    /// Must be called after GSP boot completes. Queries hardware parameters,
+    /// builds the engine bitmap, and sets up allocators.
+    pub(crate) fn init_post_gsp_boot(
+        &mut self,
+        cmdq: &Cmdq,
+        bar: &Bar0,
+        total_vram: u64,
+    ) -> Result {
+        self.gsp_config.total_fbmem_size = total_vram;
+        // TODO: query actual available CHIDs from GSP instead of hardcoding.
+        self.gsp_config.total_avail_chids = 2048;
+        self.build_engine_bitmap(cmdq, bar)?;
+        self.init_comm_layout();
+        self.init_chid_allocator();
+        Ok(())
+    }
+
     /// Create a vGPU instance: allocate resources, bootload the plugin, register.
     pub(crate) fn create_instance(
         &mut self,

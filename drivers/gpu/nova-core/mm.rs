@@ -13,10 +13,14 @@ pub(crate) mod vmm;
 use kernel::{
     devres::Devres,
     gpu::buddy::{
+        AllocatedBlocks,
         GpuBuddy,
+        GpuBuddyAllocFlags,
+        GpuBuddyAllocMode,
         GpuBuddyParams, //
     },
     prelude::*,
+    ptr::Alignment,
     sizes::SZ_4K,
     sync::Arc, //
 };
@@ -137,6 +141,51 @@ impl From<Pfn> for VramAddress {
     fn from(pfn: Pfn) -> Self {
         Self::default().set_frame_number(pfn)
     }
+}
+
+/// A block of allocated VRAM. Freed when dropped.
+pub(crate) struct VramBlock {
+    blocks: Pin<KBox<AllocatedBlocks>>,
+    addr: u64,
+    size: u64,
+}
+
+impl VramBlock {
+    /// The physical VRAM address of this block.
+    pub(crate) fn addr(&self) -> u64 {
+        self.addr
+    }
+
+    /// The size of this block in bytes.
+    pub(crate) fn size(&self) -> u64 {
+        self.size
+    }
+
+    /// The physical frame number for this block.
+    pub(crate) fn pfn(&self) -> Pfn {
+        Pfn::from(VramAddress::new(self.addr))
+    }
+}
+
+/// Allocate a contiguous block of VRAM.
+pub(crate) fn alloc_vram(mm: &GpuMm, size: u64, align: u64) -> Result<VramBlock> {
+    let align_val = align.max(PAGE_SIZE as u64) as usize;
+    let alignment = Alignment::new_checked(align_val).ok_or(EINVAL)?;
+    let blocks = KBox::pin_init(
+        mm.buddy()?.alloc_blocks(
+            GpuBuddyAllocMode::Simple,
+            size,
+            alignment,
+            GpuBuddyAllocFlags::default(),
+        ),
+        GFP_KERNEL,
+    )?;
+    let first = blocks.iter().next().ok_or(ENOMEM)?;
+    Ok(VramBlock {
+        addr: first.offset(),
+        size: first.size(),
+        blocks,
+    })
 }
 
 // GPU virtual address.

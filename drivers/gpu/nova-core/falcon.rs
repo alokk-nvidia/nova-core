@@ -542,11 +542,12 @@ impl<E: FalconEngine + 'static> Falcon<E> {
         // need to perform.
         let num_transfers = load_offsets.len.div_ceil(DMA_LEN);
 
-        // Check that the area we are about to transfer is within the bounds of the DMA object.
-        // Upper limit of transfer is `(num_transfers * DMA_LEN) + load_offsets.src_start`.
-        match num_transfers
-            .checked_mul(DMA_LEN)
-            .and_then(|size| size.checked_add(load_offsets.src_start))
+        // Check that the actual data range fits within the DMA object. The last
+        // DMA block may extend past data end but stays within the coherent
+        // allocation's page-aligned backing.
+        match load_offsets
+            .len
+            .checked_add(load_offsets.src_start)
         {
             None => {
                 dev_err!(self.dev, "DMA transfer length overflow\n");

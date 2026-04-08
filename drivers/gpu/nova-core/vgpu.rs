@@ -163,6 +163,80 @@ pub(crate) struct Vgpu {
 
     pub(crate) vgpu_types: KVec<VgpuType>,
     pub(crate) instances: KVec<VgpuInstance>,
+
+    chid_alloc: ChidAllocator,
+}
+
+/// Bitmap-based channel ID allocator for vGPU instances.
+struct ChidAllocator {
+    bitmap: [u64; 32],
+    total: u32,
+}
+
+impl ChidAllocator {
+    fn new() -> Self {
+        Self {
+            bitmap: [0u64; 32],
+            total: 0,
+        }
+    }
+
+    fn init(&mut self, total: u32) {
+        self.total = total;
+        self.bitmap = [0u64; 32];
+    }
+
+    /// Allocate a contiguous, aligned block of `count` channel IDs.
+    fn alloc(&mut self, count: u32) -> Result<u32> {
+        if count == 0 || count > self.total {
+            return Err(EINVAL);
+        }
+        let mut offset: u32 = 0;
+        while offset + count <= self.total {
+            if self.is_range_free(offset, count) {
+                self.set_range(offset, count);
+                return Ok(offset);
+            }
+            offset += count;
+        }
+        Err(ENOSPC)
+    }
+
+    fn free(&mut self, offset: u32, count: u32) {
+        for i in offset..offset + count {
+            let (word, bit) = ((i / 64) as usize, i % 64);
+            if word < self.bitmap.len() {
+                self.bitmap[word] &= !(1u64 << bit);
+            }
+        }
+    }
+
+    fn is_range_free(&self, offset: u32, count: u32) -> bool {
+        for i in offset..offset + count {
+            let (word, bit) = ((i / 64) as usize, i % 64);
+            if word >= self.bitmap.len() || self.bitmap[word] & (1u64 << bit) != 0 {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn set_range(&mut self, offset: u32, count: u32) {
+        for i in offset..offset + count {
+            let (word, bit) = ((i / 64) as usize, i % 64);
+            if word < self.bitmap.len() {
+                self.bitmap[word] |= 1u64 << bit;
+            }
+        }
+    }
+}
+
+/// Round down to the previous power of 2 (or 0 if input is 0).
+fn prev_pow2(x: u32) -> u32 {
+    if x == 0 {
+        return 0;
+    }
+    1 << (31 - x.leading_zeros())
 }
 
 impl Vgpu {
@@ -196,6 +270,7 @@ impl Vgpu {
             },
             vgpu_types: KVec::new(),
             instances: KVec::new(),
+            chid_alloc: ChidAllocator::new(),
         })
     }
 
@@ -220,6 +295,42 @@ impl Vgpu {
             .ok_or(ENODEV)?;
         self.instances.remove(pos)?;
         Ok(())
+    }
+
+    /// Initialize the channel ID allocator with the total available count.
+    pub(crate) fn init_chid_allocator(&mut self) {
+        self.chid_alloc.init(self.gsp_config.total_avail_chids);
+    }
+
+    /// Allocate channel IDs for a vGPU instance.
+    pub(crate) fn setup_chids(&mut self, instance: &mut VgpuInstance) -> Result {
+        let vgpu_type = self.vgpu_types.get(instance.vgpu_type_idx).ok_or(EINVAL)?;
+        let num = prev_pow2(self.gsp_config.total_avail_chids / vgpu_type.max_instance);
+        if num == 0 {
+            return Err(EINVAL);
+        }
+        let offset = self.chid_alloc.alloc(num)?;
+        instance.chid_offset = offset;
+        instance.num_chid = num;
+        instance.num_plugin_channels = 1;
+        Ok(())
+    }
+
+    /// Release channel IDs held by an instance.
+    pub(crate) fn release_chids(&mut self, instance: &mut VgpuInstance) {
+        if instance.num_chid > 0 {
+            self.chid_alloc
+                .free(instance.chid_offset, instance.num_chid);
+            instance.chid_offset = 0;
+            instance.num_chid = 0;
+        }
+    }
+
+    /// Release channel IDs by offset and count (used when instance is consumed).
+    fn release_chids_by_value(&mut self, offset: u32, count: u32) {
+        if count > 0 {
+            self.chid_alloc.free(offset, count);
+        }
     }
 
     /// Build the engine bitmap by querying GSP via the device info table.

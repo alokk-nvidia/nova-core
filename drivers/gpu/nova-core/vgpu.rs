@@ -221,4 +221,36 @@ impl Vgpu {
         self.instances.remove(pos)?;
         Ok(())
     }
+
+    /// Build the engine bitmap by querying GSP via the device info table.
+    pub(crate) fn build_engine_bitmap(&mut self, cmdq: &Cmdq, bar: &Bar0) -> Result {
+        let mut base_index: u32 = 0;
+
+        loop {
+            let mut buf = [0u8; size_of::<DeviceInfoTableParams>()];
+            buf[0..4].copy_from_slice(&base_index.to_ne_bytes());
+
+            send_vgpu_command(cmdq, bar, CMD_GET_DEVICE_INFO_TABLE, &mut buf)?;
+
+            // SAFETY: `buf` is exactly `size_of::<DeviceInfoTableParams>()` bytes.
+            let params: &DeviceInfoTableParams =
+                unsafe { &*buf.as_ptr().cast::<DeviceInfoTableParams>() };
+
+            let n = (params.num_entries as usize).min(DEVICE_INFO_TABLE_MAX_ENTRIES);
+            for i in 0..n {
+                let rm_engine_type = params.entries[i].engine_data[ENGINE_INFO_TYPE_RM_ENGINE_TYPE];
+                let eid = rm_engine_type as usize;
+                if eid > 0 && eid < NV2080_GPU_MAX_ENGINES {
+                    self.engine_bitmap[eid / 64] |= 1u64 << (eid % 64);
+                }
+            }
+
+            if params.b_more == 0 {
+                break;
+            }
+            base_index += params.num_entries;
+        }
+
+        Ok(())
+    }
 }

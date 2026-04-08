@@ -43,23 +43,69 @@ fn data_u64s(opcode: u32, count: u32) -> Result<usize> {
     }
 }
 
+fn header_index(hdr: u64) -> u32 {
+    ((hdr >> 16) & 0xFFF) as u32
+}
+
 /// GSP static config key constants.
 ///
 /// Open RM reference: `interface/gmcapi/gmcapi_gsp_config.h`
 pub(crate) mod gsp_config_key {
+    pub(crate) const FB_REGION_COUNT: u16 = 0x0010;
+    pub(crate) const FB_REGION_FLAGS: u16 = 0x0012;
+    pub(crate) const FB_REGION_BASE: u16 = 0x1011;
+    pub(crate) const FB_REGION_LIMIT: u16 = 0x1012;
+    pub(crate) const FB_REGION_RESERVED: u16 = 0x1013;
+    pub(crate) const BAR1_PDE_BASE: u16 = 0x1020;
     /// GPU name string (ARRAY8, null-terminated).
     pub(crate) const GPU_NAME_STRING: u16 = 0x2000;
 }
 
-/// Find a key in an NVKV-encoded byte buffer and return its raw data bytes.
+/// A decoded NVKV entry.
+pub(crate) struct NvkvEntry<'a> {
+    pub(crate) key: u16,
+    pub(crate) index: u32,
+    pub(crate) opcode: u32,
+    pub(crate) count: u32,
+    pub(crate) data: &'a [u8],
+}
+
+impl NvkvEntry<'_> {
+    /// Read the value as an immediate u32 (OPCODE_IMM32).
+    pub(crate) fn as_imm32(&self) -> Option<u32> {
+        (self.opcode == OPCODE_IMM32).then_some(self.count)
+    }
+
+    /// Read the first u64 from a SEQ64 entry.
+    pub(crate) fn as_u64(&self) -> Option<u64> {
+        if self.opcode != OPCODE_SEQ64 || self.data.len() < 8 {
+            return None;
+        }
+        Some(u64::from_le_bytes(self.data[..8].try_into().ok()?))
+    }
+
+    /// Read the first u32 from a SEQ32 entry, or from IMM32.
+    pub(crate) fn as_u32(&self) -> Option<u32> {
+        match self.opcode {
+            OPCODE_IMM32 => Some(self.count),
+            OPCODE_SEQ32 if self.data.len() >= 4 => {
+                Some(u32::from_le_bytes(self.data[..4].try_into().ok()?))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Iterate all entries in an NVKV-encoded byte buffer.
 ///
-/// The `payload` is the raw response bytes from a `GMCAPI_DYNAMIC` command.
-/// Returns `None` if the key is not found.
+/// SEQ32/SEQ64 entries encode multiple sequential keys in a single header.
+/// This iterator unpacks them, calling `f` once per logical key-value pair.
 ///
-/// # Errors
-///
-/// Returns `EINVAL` if the NVKV data is malformed (bad opcode or truncated).
-pub(crate) fn find_array8<'a>(payload: &'a [u8], target_key: u16) -> Result<Option<&'a [u8]>> {
+/// Returns `Err(EINVAL)` if the data is malformed.
+pub(crate) fn for_each_entry<F>(payload: &[u8], mut f: F) -> Result
+where
+    F: FnMut(NvkvEntry<'_>),
+{
     if payload.len() % 8 != 0 {
         return Err(EINVAL);
     }
@@ -76,7 +122,8 @@ pub(crate) fn find_array8<'a>(payload: &'a [u8], target_key: u16) -> Result<Opti
         pos += 1;
 
         let opcode = header_opcode(hdr);
-        let key = header_key(hdr);
+        let base_key = header_key(hdr);
+        let index = header_index(hdr);
         let count = header_count(hdr);
         let n_data = data_u64s(opcode, count)?;
 
@@ -84,17 +131,63 @@ pub(crate) fn find_array8<'a>(payload: &'a [u8], target_key: u16) -> Result<Opti
             return Err(EINVAL);
         }
 
-        if key == target_key && opcode == OPCODE_ARRAY8 {
-            let byte_offset = pos * 8;
-            let byte_count = count as usize;
-            if byte_offset + byte_count > payload.len() {
-                return Err(EINVAL);
+        let data_start = pos * 8;
+
+        match opcode {
+            OPCODE_IMM32 => {
+                f(NvkvEntry {
+                    key: base_key,
+                    index,
+                    opcode,
+                    count,
+                    data: &[],
+                });
             }
-            return Ok(Some(&payload[byte_offset..byte_offset + byte_count]));
+            OPCODE_SEQ32 => {
+                for i in 0..count as usize {
+                    let off = data_start + i * 4;
+                    if off + 4 <= payload.len() {
+                        let val = u32::from_le_bytes(
+                            payload[off..off + 4].try_into().map_err(|_| EINVAL)?,
+                        );
+                        f(NvkvEntry {
+                            key: base_key + i as u16,
+                            index,
+                            opcode: OPCODE_IMM32,
+                            count: val,
+                            data: &payload[off..off + 4],
+                        });
+                    }
+                }
+            }
+            OPCODE_SEQ64 => {
+                for i in 0..count as usize {
+                    let off = data_start + i * 8;
+                    if off + 8 <= payload.len() {
+                        f(NvkvEntry {
+                            key: base_key + i as u16,
+                            index,
+                            opcode: OPCODE_SEQ64,
+                            count: 1,
+                            data: &payload[off..off + 8],
+                        });
+                    }
+                }
+            }
+            _ => {
+                let data_end = (pos + n_data) * 8;
+                f(NvkvEntry {
+                    key: base_key,
+                    index,
+                    opcode,
+                    count,
+                    data: &payload[data_start..data_end],
+                });
+            }
         }
 
         pos += n_data;
     }
 
-    Ok(None)
+    Ok(())
 }

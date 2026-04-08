@@ -236,18 +236,97 @@ pub(crate) fn get_gsp_info(cmdq: &Cmdq, bar: &Bar0) -> Result<GetGspStaticInfoRe
         return Err(EIO);
     }
 
+    const MAX_FB_REGIONS: usize = 16;
+
     let mut gpu_name = [0u8; 64];
-    if let Some(name_bytes) =
-        nvkv::find_array8(&response.payload, nvkv::gsp_config_key::GPU_NAME_STRING)?
-    {
-        let len = name_bytes.len().min(gpu_name.len());
-        gpu_name[..len].copy_from_slice(&name_bytes[..len]);
+    let mut bar1_pde_base: u64 = 0;
+    let mut fb_region_count: usize = 0;
+    let mut fb_base = [0u64; MAX_FB_REGIONS];
+    let mut fb_limit = [0u64; MAX_FB_REGIONS];
+    let mut fb_reserved = [0u64; MAX_FB_REGIONS];
+    let mut fb_flags = [0u32; MAX_FB_REGIONS];
+
+    nvkv::for_each_entry(&response.payload, |entry| {
+        use nvkv::gsp_config_key::*;
+        let idx = entry.index as usize;
+
+        match entry.key {
+            GPU_NAME_STRING => {
+                let len = (entry.count as usize).min(gpu_name.len()).min(entry.data.len());
+                gpu_name[..len].copy_from_slice(&entry.data[..len]);
+            }
+            FB_REGION_COUNT => {
+                if let Some(v) = entry.as_imm32() {
+                    fb_region_count = (v as usize).min(MAX_FB_REGIONS);
+                }
+            }
+            FB_REGION_BASE if idx < MAX_FB_REGIONS => {
+                if let Some(v) = entry.as_u64() {
+                    fb_base[idx] = v;
+                }
+            }
+            FB_REGION_LIMIT if idx < MAX_FB_REGIONS => {
+                if let Some(v) = entry.as_u64() {
+                    fb_limit[idx] = v;
+                }
+            }
+            FB_REGION_RESERVED if idx < MAX_FB_REGIONS => {
+                if let Some(v) = entry.as_u64() {
+                    fb_reserved[idx] = v;
+                }
+            }
+            FB_REGION_FLAGS if idx < MAX_FB_REGIONS => {
+                if let Some(v) = entry.as_u32() {
+                    fb_flags[idx] = v;
+                }
+            }
+            BAR1_PDE_BASE => {
+                if let Some(v) = entry.as_u64() {
+                    bar1_pde_base = v;
+                }
+            }
+            _ => {}
+        }
+    })?;
+
+    let mut usable_fb_region = 0..0u64;
+    let mut total_fb_end = 0u64;
+    let mut found_usable = false;
+
+    for i in 0..fb_region_count {
+        let base = fb_base[i];
+        let limit = fb_limit[i];
+        if limit < base {
+            continue;
+        }
+
+        let end = limit.saturating_add(1);
+        if end > total_fb_end {
+            total_fb_end = end;
+        }
+
+        // Same criteria as GspStaticConfigInfo::first_usable_fb_region():
+        // not reserved, not protected, supports compression and ISO.
+        let flags = fb_flags[i];
+        let support_compressed = flags & 1 != 0;
+        let support_iso = flags & 2 != 0;
+        let is_protected = flags & 4 != 0;
+
+        if !found_usable
+            && fb_reserved[i] == 0
+            && !is_protected
+            && support_compressed
+            && support_iso
+        {
+            usable_fb_region = base..end;
+            found_usable = true;
+        }
     }
 
     Ok(GetGspStaticInfoReply {
         gpu_name,
-        bar1_pde_base: 0,
-        usable_fb_region: 0..0,
-        total_fb_end: 0,
+        bar1_pde_base,
+        usable_fb_region,
+        total_fb_end,
     })
 }

@@ -21,7 +21,7 @@ use kernel::{
 
 use crate::{
     bounded_enum,
-    driver::Bar0,
+    driver::{Bar0, Bar1},
     falcon::{
         gsp::Gsp as GspFalcon,
         sec2::Sec2 as Sec2Falcon,
@@ -330,6 +330,8 @@ pub(crate) struct Gpu {
     vgpu: Vgpu,
     /// Static GPU information from GSP.
     gsp_static_info: GetGspStaticInfoReply,
+    /// MMIO mapping of PCI BAR 1
+    pub(crate) bar1: Arc<Devres<Bar1>>,
     /// BAR1 user interface for CPU access to GPU virtual memory.
     bar_user: Option<BarUser>,
     /// fwctl device registration for GMC API pass-through.
@@ -341,6 +343,7 @@ impl Gpu {
     pub(crate) fn new<'a>(
         pdev: &'a pci::Device<device::Core>,
         devres_bar: Arc<Devres<Bar0>>,
+        devres_bar1: Arc<Devres<Bar1>>,
         bar: &'a Bar0,
     ) -> impl PinInit<Self, Error> + 'a {
         pin_init::pin_init_scope(move || {
@@ -485,6 +488,7 @@ impl Gpu {
                 },
 
                 bar: devres_bar,
+                bar1: devres_bar1,
                 spec,
             }))
         })
@@ -517,10 +521,9 @@ impl Gpu {
         // PRAMIN aperture self-tests.
         crate::mm::pramin::run_self_test(pdev.as_ref(), self.mm.pramin(), self.spec.chipset)?;
 
-        // BAR1 self-tests — only on V2 MMU (BarUser is None on V3+).
+        // BAR1 self-tests using the persistent BAR1 mapping — only on V2 MMU.
         if self.bar_user.is_some() {
-            let bar1 = Arc::pin_init(pdev.iomap_region(1, c"nova-core/bar1"), GFP_KERNEL)?;
-            let bar1_access = bar1.access(pdev.as_ref())?;
+            let bar1_access = self.bar1.access(pdev.as_ref())?;
 
             crate::mm::bar_user::run_self_test(
                 pdev.as_ref(),

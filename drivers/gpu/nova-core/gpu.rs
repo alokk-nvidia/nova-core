@@ -551,9 +551,11 @@ impl Gpu {
 
         let comm_size = proj.vgpu.comm_layout.total_size;
 
+        dev_info!(pdev, "mock_bootload: upload+init done, creating instance...\n");
         proj.vgpu.mock_create_instance(
             mm, &gsp.cmdq, bar0, gsp.h_client(), gsp.h_subdevice(), pdev,
         ).inspect_err(|_| dev_err!(pdev, "failed to create mock vGPU instance\n"))?;
+        dev_info!(pdev, "mock_bootload: instance created, bootload RPC sent ok\n");
 
         let idx = proj.vgpu.instances.len() - 1;
         let instance = &proj.vgpu.instances[idx];

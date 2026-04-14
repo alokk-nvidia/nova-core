@@ -492,13 +492,30 @@ impl Vgpu {
             kernel::pr_err!("wait_plugin_ready: bar_user.map FAILED {:?}\n", e);
         })?;
 
-        kernel::io::poll::read_poll_timeout(
+        kernel::pr_info!("wait_plugin_ready: mapped ok, polling offset={:#x} for magic={:#x}\n",
+            CTRL_BUF_MSG_SEQ_NUM_OFFSET, GSP_PLUGIN_BOOTLOADED);
+
+        let initial = access.try_read32(CTRL_BUF_MSG_SEQ_NUM_OFFSET).unwrap_or(0xDEAD);
+        kernel::pr_info!("wait_plugin_ready: initial value at offset 8 = {:#x}\n", initial);
+
+        let result = kernel::io::poll::read_poll_timeout(
             || access.try_read32(CTRL_BUF_MSG_SEQ_NUM_OFFSET),
             |val| *val == GSP_PLUGIN_BOOTLOADED,
             PLUGIN_POLL_INTERVAL,
             PLUGIN_BOOT_TIMEOUT,
-        )?;
+        );
 
+        let final_val = access.try_read32(CTRL_BUF_MSG_SEQ_NUM_OFFSET).unwrap_or(0xDEAD);
+        kernel::pr_info!("wait_plugin_ready: final value at offset 8 = {:#x} (result={:?})\n", final_val, result);
+
+        for off in (0..64).step_by(4) {
+            let v = access.try_read32(off).unwrap_or(0xDEAD);
+            if v != 0 {
+                kernel::pr_info!("  ctrl_buf[{:#x}] = {:#x}\n", off, v);
+            }
+        }
+
+        result?;
         Ok(())
     }
 

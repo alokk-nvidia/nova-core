@@ -383,7 +383,7 @@ impl Vmm {
         while let Some(c) = cursor {
             let (next, node) = c.remove_current();
             let (install_addr, page) = node.to_key_value();
-            kernel::pr_info!("VMM execute_map: PDE #{} addr={:#x} level={:?}\n", pde_count, install_addr, page.level);
+            kernel::pr_info!("VMM execute_map: PDE #{} addr={:#x} level={:?}\n", pde_count, install_addr.raw(), page.level);
             let first_block = page.alloc.iter().next();
             if first_block.is_none() {
                 kernel::pr_err!("VMM execute_map: alloc has NO blocks!\n");

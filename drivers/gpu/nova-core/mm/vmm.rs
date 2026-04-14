@@ -376,7 +376,7 @@ impl Vmm {
             kernel::pr_err!("VMM execute_map: pramin window FAILED {:?}\n", e);
         })?;
 
-        kernel::pr_info!("VMM execute_map: draining {} pt_pages\n", self.pt_pages.len());
+        kernel::pr_info!("VMM execute_map: draining pt_pages\n");
 
         let mut cursor = self.pt_pages.cursor_front_mut();
         let mut pde_count = 0u32;

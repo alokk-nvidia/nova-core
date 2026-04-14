@@ -491,10 +491,12 @@ impl Gpu {
                         params.bar1_pde_base, mmu_version, bar1_size);
 
                     {
+                    {
                         let mm_ref = mm.as_ref().get_ref();
                         let mut w = mm_ref.pramin().window()?;
-                        for i in 0..4u64 {
-                            let lo = w.try_read64(params.bar1_pde_base + i * 8)?;
+                        let base: usize = params.bar1_pde_base as usize;
+                        for i in 0..4usize {
+                            let lo = w.try_read64(base + i * 8)?;
                             dev_info!(pdev.as_ref(), "  PDB[{}] = {:#018x}\n", i, lo);
                         }
                     }

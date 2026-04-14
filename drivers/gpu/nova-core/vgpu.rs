@@ -503,9 +503,9 @@ impl Vgpu {
                 w.try_write32(test_vram_addr, TEST_PATTERN)?;
             }
             let bar1_val = access.try_read32(0).unwrap_or(0xDEAD);
+            let ok_str = if bar1_val == TEST_PATTERN { "OK" } else { "FAIL" };
             kernel::pr_info!("wait_plugin_ready: PRAMIN->BAR1 test: wrote {:#x} to VRAM {:#x}, BAR1 read={:#x} {}\n",
-                TEST_PATTERN, test_vram_addr, bar1_val,
-                if bar1_val == TEST_PATTERN { "OK" } else { "FAIL" });
+                TEST_PATTERN, test_vram_addr, bar1_val, ok_str);
             {
                 let mut w = mm.pramin().window()?;
                 let pramin_readback = w.try_read32(test_vram_addr)?;

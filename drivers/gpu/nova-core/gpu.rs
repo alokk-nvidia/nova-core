@@ -487,6 +487,18 @@ impl Gpu {
                     let pdb_addr = VramAddress::new(params.bar1_pde_base);
                     let mmu_version = MmuVersion::from(spec.chipset.arch());
                     let bar1_size = pdev.resource_len(crate::driver::bar1_region(pdev)?)?;
+                    dev_info!(pdev.as_ref(), "BarUser: pdb_addr={:#x} mmu={:?} bar1_size={:#x}\n",
+                        params.bar1_pde_base, mmu_version, bar1_size);
+
+                    {
+                        let mm_ref = mm.as_ref().get_ref();
+                        let mut w = mm_ref.pramin().window()?;
+                        for i in 0..4u64 {
+                            let lo = w.try_read64(params.bar1_pde_base + i * 8)?;
+                            dev_info!(pdev.as_ref(), "  PDB[{}] = {:#018x}\n", i, lo);
+                        }
+                    }
+
                     BarUser::new(pdb_addr, mmu_version, bar1_size)?
                 },
 

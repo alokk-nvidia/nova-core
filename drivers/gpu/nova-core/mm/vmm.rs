@@ -372,10 +372,14 @@ impl Vmm {
         } = prepared;
 
         let walker = PtWalk::new(self.pdb_addr, self.mmu_version);
-        let mut window = mm.pramin().window()?;
+        let mut window = mm.pramin().window().inspect_err(|e| {
+            kernel::pr_err!("VMM execute_map: pramin window FAILED {:?}\n", e);
+        })?;
 
-        // First, drain self.pt_pages, install all pending PDEs.
+        kernel::pr_info!("VMM execute_map: draining {} pt_pages\n", self.pt_pages.len());
+
         let mut cursor = self.pt_pages.cursor_front_mut();
+        let mut pde_count = 0u32;
         while let Some(c) = cursor {
             let (next, node) = c.remove_current();
             let (install_addr, page) = node.to_key_value();
@@ -383,42 +387,52 @@ impl Vmm {
 
             if page.level == self.mmu_version.dual_pde_level() {
                 let new_dpde = DualPde::new_small(self.mmu_version, Pfn::from(page_vram));
-                new_dpde.write(&mut window, install_addr)?;
+                new_dpde.write(&mut window, install_addr).inspect_err(|e| {
+                    kernel::pr_err!("VMM execute_map: dpde write FAILED {:?}\n", e);
+                })?;
             } else {
                 let new_pde = Pde::new_vram(self.mmu_version, Pfn::from(page_vram));
-                new_pde.write(&mut window, install_addr)?;
+                new_pde.write(&mut window, install_addr).inspect_err(|e| {
+                    kernel::pr_err!("VMM execute_map: pde write FAILED {:?}\n", e);
+                })?;
             }
 
-            // Track the allocated pages in the `Vmm`.
             self.page_table_allocs
                 .push_within_capacity(page.alloc)
                 .map_err(|_| ENOMEM)?;
 
+            pde_count += 1;
             cursor = next;
         }
+        kernel::pr_info!("VMM execute_map: {} PDEs installed, writing {} PTEs\n", pde_count, num_pages);
 
-        // Next, write PTEs (all PDEs now installed in HW).
         for (i, &pfn) in pfns.iter().enumerate() {
             let i_u64: u64 = i.into_safe_cast();
             let vfn = Vfn::new(vfn_start.raw() + i_u64);
-            let result = walker.walk_to_pte_lookup_with_window(&mut window, vfn)?;
+            let result = walker.walk_to_pte_lookup_with_window(&mut window, vfn).inspect_err(|e| {
+                kernel::pr_err!("VMM execute_map: walk_pte vfn={:#x} FAILED {:?}\n", vfn.raw(), e);
+            })?;
 
             match result {
                 WalkResult::Unmapped { pte_addr } | WalkResult::Mapped { pte_addr, .. } => {
                     let pte = Pte::new_vram(self.mmu_version, pfn, writable);
-                    pte.write(&mut window, pte_addr)?;
+                    pte.write(&mut window, pte_addr).inspect_err(|e| {
+                        kernel::pr_err!("VMM execute_map: pte write vfn={:#x} FAILED {:?}\n", vfn.raw(), e);
+                    })?;
                 }
                 WalkResult::PageTableMissing => {
-                    kernel::pr_warn_once!("VMM: page table missing for VFN {vfn:?}\n");
+                    kernel::pr_err!("VMM execute_map: PT missing vfn={:#x}\n", vfn.raw());
                     return Err(EIO);
                 }
             }
         }
 
         drop(window);
+        kernel::pr_info!("VMM execute_map: PTEs done, flushing TLB\n");
 
-        // Finally, flush the TLB.
-        mm.tlb().flush(self.pdb_addr)?;
+        mm.tlb().flush(self.pdb_addr).inspect_err(|e| {
+            kernel::pr_err!("VMM execute_map: TLB flush FAILED {:?}\n", e);
+        })?;
 
         Ok(MappedRange {
             vfn_start,

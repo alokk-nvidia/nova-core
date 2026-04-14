@@ -500,6 +500,13 @@ impl Gpu {
                         }
                     }
 
+                    {
+                        let bar1_ref = devres_bar1.try_access().ok_or(ENODEV)?;
+                        let v0 = bar1_ref.try_read32(0).unwrap_or(0xDEAD);
+                        let v4 = bar1_ref.try_read32(4).unwrap_or(0xDEAD);
+                        dev_info!(pdev.as_ref(), "raw BAR1[0]={:#x} BAR1[4]={:#x}\n", v0, v4);
+                    }
+
                     BarUser::new(pdb_addr, mmu_version, bar1_size)?
                 },
 

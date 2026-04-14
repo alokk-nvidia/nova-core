@@ -782,11 +782,13 @@ impl Vgpu {
 
         let vgpu_type = self.vgpu_types.get(instance.vgpu_type_idx).ok_or(EINVAL)?;
         let nvkv_data = encode_config_params_nvkv(instance, vgpu_type, h_client)?;
-        let data_bytes = nvkv_data.as_bytes();
+        let kv_pairs = nvkv_data.as_bytes();
+        let kv_count = nvkv_data.kv_count();
 
-        // Use a msg-buffer-sized buf so recv_response reads back the full debug dump.
+        // msg_buff_v2 layout: [kv_count: u64][kv_pairs: u64[]]
         let mut buf = KVVec::from_elem(0u8, VGPU_GSP_MESSAGE_REGION_SIZE as usize, GFP_KERNEL)?;
-        buf.as_mut_slice()[..data_bytes.len()].copy_from_slice(data_bytes);
+        buf.as_mut_slice()[..8].copy_from_slice(&kv_count.to_ne_bytes());
+        buf.as_mut_slice()[8..8 + kv_pairs.len()].copy_from_slice(kv_pairs);
 
         rpc.send_request(bar0, instance.gfid, RpcMsg::SetupConfigParamsAndInit, buf.as_slice())?;
         let result = rpc.recv_response(buf.as_mut_slice())?;
@@ -834,9 +836,9 @@ enum RpcMsg {
 /// Doorbell register offset within BAR0 for the vGPU plugin.
 const DOORBELL_BASE: usize = 0xb8_0000 + 0x2200;
 
-/// ctrl_buff->version: version 2 with STABLE_RPC capability flag.
+/// ctrl_buff->version: version 2 enables stable RPC mode.
 /// chips_a GSP plugin requires version >= 2.
-const VGPU_CPU_GSP_CTRL_BUFF_VERSION: u32 = 0x8000_0002;
+const VGPU_CPU_GSP_CTRL_BUFF_VERSION: u32 = 2;
 
 /// RPC response timeout and poll interval.
 const RPC_TIMEOUT: kernel::time::Delta = kernel::time::Delta::from_secs(120);
@@ -1023,6 +1025,9 @@ impl NvkvWriter {
         }
         Ok(())
     }
+    fn kv_count(&self) -> u64 {
+        self.buf.len() as u64
+    }
     fn as_bytes(&self) -> &[u8] {
         let ptr = self.buf.as_slice().as_ptr() as *const u8;
         let len = self.buf.len() * 8;
@@ -1051,14 +1056,13 @@ fn encode_config_params_nvkv(
     w.put_u32(0x022, 4)?;                      // HYPERVISOR_TYPE (KVM)
     w.put_u32(0x023, 2)?;                      // HOST_CPU_ARCH (X86_64)
     w.put_u64(0x024, 4096)?;                   // HOST_PAGE_SIZE
-    w.put_u32(0x033, 1)?;                      // ENABLE_UVM
-    w.put_u32(0x034, 0)?;                      // LINUX_INTERRUPT_OPT
-    w.put_u32(0x035, 1)?;                      // VMM_MIGRATION_SUPPORTED
-    w.put_u32(0x037, 0)?;                      // ENABLE_CONSOLE_VNC
-    w.put_u32(0x038, 0)?;                      // USE_NON_STALL_LINUX_EVENTS
+    // FEATURE_FLAGS: U64 bitfield packing 15 booleans (bits 0-14)
+    //   bit 3: ENABLE_UVM = 1
+    //   bit 5: VMM_MIGRATION_SUPPORTED = 1
+    let feature_flags: u64 = (1 << 3) | (1 << 5);
+    w.put_u64(0x030, feature_flags)?;          // FEATURE_FLAGS
     w.put_u32(0x040, 0)?;                      // PLACEMENT_ID
     w.put_u32(0x042, 0)?;                      // CHANNEL_USAGE_THRESHOLD_PCT
-    w.put_u32(0x050, 0)?;                      // DEVICE_VM
     Ok(w)
 }
 

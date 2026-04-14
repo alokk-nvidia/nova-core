@@ -492,8 +492,27 @@ impl Vgpu {
             kernel::pr_err!("wait_plugin_ready: bar_user.map FAILED {:?}\n", e);
         })?;
 
-        kernel::pr_info!("wait_plugin_ready: mapped ok, polling offset={:#x} for magic={:#x}\n",
-            CTRL_BUF_MSG_SEQ_NUM_OFFSET, GSP_PLUGIN_BOOTLOADED);
+        kernel::pr_info!("wait_plugin_ready: mapped ok, vfn_start={:#x} bar1_off={:#x}\n",
+            access.vfn_start().raw(), access.vfn_start().raw() as u64 * page_size);
+
+        {
+            const TEST_PATTERN: u32 = 0xDEAD_BEEF;
+            let test_vram_addr = base as usize;
+            {
+                let mut w = mm.pramin().window()?;
+                w.try_write32(test_vram_addr, TEST_PATTERN)?;
+            }
+            let bar1_val = access.try_read32(0).unwrap_or(0xDEAD);
+            kernel::pr_info!("wait_plugin_ready: PRAMIN->BAR1 test: wrote {:#x} to VRAM {:#x}, BAR1 read={:#x} {}\n",
+                TEST_PATTERN, test_vram_addr, bar1_val,
+                if bar1_val == TEST_PATTERN { "OK" } else { "FAIL" });
+            {
+                let mut w = mm.pramin().window()?;
+                let pramin_readback = w.try_read32(test_vram_addr)?;
+                kernel::pr_info!("wait_plugin_ready: PRAMIN readback={:#x}\n", pramin_readback);
+                w.try_write32(test_vram_addr, 0)?;
+            }
+        }
 
         let initial = access.try_read32(CTRL_BUF_MSG_SEQ_NUM_OFFSET).unwrap_or(0xDEAD);
         kernel::pr_info!("wait_plugin_ready: initial value at offset 8 = {:#x}\n", initial);

@@ -440,6 +440,19 @@ impl Vmm {
             kernel::pr_err!("VMM execute_map: TLB flush FAILED {:?}\n", e);
         })?;
 
+        {
+            let mut w = mm.pramin().window()?;
+            let pdb_base: usize = self.pdb_addr.raw();
+            let pdb0 = w.try_read64(pdb_base)?;
+            kernel::pr_info!("VMM readback: PDB[0]={:#018x} at {:#x}\n", pdb0, pdb_base);
+            if pdb0 != 0 {
+                let l1_addr = (pdb0 >> 12 << 12) & 0x000F_FFFF_FFFF_F000;
+                let l1_addr_usize: usize = l1_addr as usize;
+                let l1_0 = w.try_read64(l1_addr_usize)?;
+                kernel::pr_info!("VMM readback: L1[0]={:#018x} at {:#x}\n", l1_0, l1_addr);
+            }
+        }
+
         Ok(MappedRange {
             vfn_start,
             num_pages,

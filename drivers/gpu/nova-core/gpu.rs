@@ -491,7 +491,6 @@ impl Gpu {
                         params.bar1_pde_base, mmu_version, bar1_size);
 
                     {
-                    {
                         let mm_ref = mm.as_ref().get_ref();
                         let mut w = mm_ref.pramin().window()?;
                         let base: usize = params.bar1_pde_base as usize;

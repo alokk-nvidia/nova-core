@@ -391,7 +391,7 @@ impl Vmm {
             let page_vram = VramAddress::new(first_block.unwrap().offset());
             kernel::pr_info!("VMM execute_map: PDE #{} install={:#x} child={:#x} level={:?} aligned={}\n",
                 pde_count, install_addr.raw(), page_vram.raw_u64(), page.level,
-                page_vram.raw_u64() & 0xFFF == 0);
+                (page_vram.raw_u64() & 0xFFF) == 0);
 
             if page.level == self.mmu_version.dual_pde_level() {
                 let new_dpde = DualPde::new_small(self.mmu_version, Pfn::from(page_vram));

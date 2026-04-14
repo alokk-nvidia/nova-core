@@ -389,9 +389,9 @@ impl Vmm {
                 return Err(ENOMEM);
             }
             let page_vram = VramAddress::new(first_block.unwrap().offset());
+            let is_aligned = (page_vram.raw_u64() & 0xFFF) == 0;
             kernel::pr_info!("VMM execute_map: PDE #{} install={:#x} child={:#x} level={:?} aligned={}\n",
-                pde_count, install_addr.raw(), page_vram.raw_u64(), page.level,
-                (page_vram.raw_u64() & 0xFFF) == 0);
+                pde_count, install_addr.raw(), page_vram.raw_u64(), page.level, is_aligned);
 
             if page.level == self.mmu_version.dual_pde_level() {
                 let new_dpde = DualPde::new_small(self.mmu_version, Pfn::from(page_vram));

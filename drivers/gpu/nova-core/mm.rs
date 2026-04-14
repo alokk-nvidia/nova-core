@@ -26,6 +26,7 @@ use kernel::{
 
 use crate::{
     driver::Bar0,
+    mm::pagetable::MmuVersion,
     num::{u64_as_usize, IntoSafeCast}, //
 };
 
@@ -177,11 +178,20 @@ pub(crate) fn alloc_vram(mm: &GpuMm, size: u64, align: u64) -> Result<VramBlock>
 // GPU virtual address decomposed into MMU v2 page table level indices.
 //
 // Bit widths match the hardware layout from `kern_gmmu_fmt_gp10x.c`:
-//   PD3 (root): [48:47] = 2 bits,  4 entries
-//   PD2:        [46:38] = 9 bits, 512 entries
-//   PD1:        [37:29] = 9 bits, 512 entries
-//   PD0 (dual): [28:21] = 8 bits, 256 entries
-//   PT:         [20:12] = 9 bits, 512 entries
+//   V2 (5 levels):
+//     PD3 (root): [48:47] = 2 bits,  4 entries
+//     PD2:        [46:38] = 9 bits, 512 entries
+//     PD1:        [37:29] = 9 bits, 512 entries
+//     PD0 (dual): [28:21] = 8 bits, 256 entries
+//     PT:         [20:12] = 9 bits, 512 entries
+//
+//   V3 (6 levels) — same bit positions, but level assignment shifts by 1:
+//     PDB:        [56:47]  (10 bits, but only low bits matter for small VAs)
+//     L1:         [55:47] = 9 bits, 512 entries
+//     L2:         [46:38] = 9 bits, 512 entries  (same bits as V2 PD2/L1)
+//     L3:         [37:29] = 9 bits, 512 entries  (same bits as V2 PD1/L2)
+//     L4 (dual):  [28:21] = 8 bits, 256 entries  (same bits as V2 PD0/L3)
+//     L5 (PTE):   [20:12] = 9 bits, 512 entries  (same bits as V2 PT/L4)
 bitfield! {
     pub(crate) struct VirtualAddress(u64), "Virtual address in GPU address space" {
         11:0    offset          as u64, "Offset within 4KB page";
@@ -189,7 +199,8 @@ bitfield! {
         28:21   pd0_index       as u64, "PD0 index (Dual PDE, 8 bits)";
         37:29   pd1_index       as u64, "PD1 index (9 bits)";
         46:38   pd2_index       as u64, "PD2 index (9 bits)";
-        48:47   pd3_index       as u64, "PD3 index (root PDB, 2 bits)";
+        48:47   pd3_index       as u64, "PD3 index (root PDB v2, 2 bits)";
+        55:47   pd3_v3_index    as u64, "PD3 index (L1 for v3, 9 bits)";
         63:12   frame_number    as u64 => Vfn, "Virtual frame number";
     }
 }
@@ -203,20 +214,27 @@ impl VirtualAddress {
 
     /// Get the page table index for a given level (0-5).
     ///
-    /// Level numbering matches [`PageTableLevel`]: 0=PDB, 1=L1(PD2),
-    /// 2=L2(PD1), 3=L3(PD0 dual), 4=L4(PT). L5 is v3-only and reuses
-    /// the PT index.
-    pub(crate) fn level_index(&self, level: u64) -> u64 {
-        match level {
-            0 => self.pd3_index(),
-            1 => self.pd2_index(),
-            2 => self.pd1_index(),
-            3 => self.pd0_index(),
-            4 => self.pt_index(),
-
-            // L5 is only used by MMU v3 (PTE level).
-            5 => self.pt_index(),
-            _ => 0,
+    /// V2 (5 levels): PDB=pd3, L1=pd2, L2=pd1, L3=pd0(dual), L4=pt
+    /// V3 (6 levels): PDB=0, L1=pd3_v3, L2=pd2, L3=pd1, L4=pd0(dual), L5=pt
+    pub(crate) fn level_index(&self, level: u64, mmu_version: MmuVersion) -> u64 {
+        match mmu_version {
+            MmuVersion::V2 => match level {
+                0 => self.pd3_index(),
+                1 => self.pd2_index(),
+                2 => self.pd1_index(),
+                3 => self.pd0_index(),
+                4 => self.pt_index(),
+                _ => 0,
+            },
+            MmuVersion::V3 => match level {
+                0 => 0,
+                1 => self.pd3_v3_index(),
+                2 => self.pd2_index(),
+                3 => self.pd1_index(),
+                4 => self.pd0_index(),
+                5 => self.pt_index(),
+                _ => 0,
+            },
         }
     }
 }

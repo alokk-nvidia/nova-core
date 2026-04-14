@@ -132,7 +132,7 @@ impl PtWalk {
         let mut cur_table = self.pdb_addr;
 
         for &level in self.mmu_version.pde_levels() {
-            let idx = va.level_index(level.as_index());
+            let idx = va.level_index(level.as_index(), self.mmu_version);
             let install_addr = Self::entry_addr(cur_table, self.mmu_version, level, idx);
 
             if level == self.mmu_version.dual_pde_level() {
@@ -203,7 +203,7 @@ impl PtWalk {
     ) -> Result<WalkResult> {
         let va = VirtualAddress::from(vfn);
         let pte_level = mmu_version.pte_level();
-        let pte_idx = va.level_index(pte_level.as_index());
+        let pte_idx = va.level_index(pte_level.as_index(), mmu_version);
         let pte_addr = Self::entry_addr(pte_table, mmu_version, pte_level, pte_idx);
         let pte = Pte::read(window, pte_addr, mmu_version)?;
 

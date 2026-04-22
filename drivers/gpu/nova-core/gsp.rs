@@ -63,6 +63,8 @@ pub(crate) struct GspBootContext<'a> {
     pub(crate) chipset: Chipset,
     pub(crate) gsp_falcon: &'a Falcon<GspFalcon>,
     pub(crate) sec2_falcon: &'a Falcon<Sec2Falcon>,
+    pub(crate) fsp_falcon: Option<Falcon<crate::falcon::fsp::Fsp>>,
+    pub(crate) vgpu_requested: bool,
 }
 
 impl GspBootContext<'_> {

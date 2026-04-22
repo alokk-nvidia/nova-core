@@ -33,6 +33,7 @@ mod fw;
 
 pub(crate) use fw::{
     GspFwWprMeta,
+    GspVfInfo,
     LibosParams, //
 };
 

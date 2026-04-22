@@ -279,6 +279,7 @@ pub(crate) enum MsgFunction {
     OsErrorLog = r570::NV_VGPU_MSG_EVENT_OS_ERROR_LOG,
     PostEvent = r570::NV_VGPU_MSG_EVENT_POST_EVENT,
     RcTriggered = r570::NV_VGPU_MSG_EVENT_RC_TRIGGERED,
+    GpuacctPerfmonUtilSamples = r570::NV_VGPU_MSG_EVENT_GPUACCT_PERFMON_UTIL_SAMPLES,
     UcodeLibOsPrint = r570::NV_VGPU_MSG_EVENT_UCODE_LIBOS_PRINT,
 }
 
@@ -314,6 +315,9 @@ impl TryFrom<u32> for MsgFunction {
             r570::NV_VGPU_MSG_EVENT_OS_ERROR_LOG => Ok(MsgFunction::OsErrorLog),
             r570::NV_VGPU_MSG_EVENT_POST_EVENT => Ok(MsgFunction::PostEvent),
             r570::NV_VGPU_MSG_EVENT_RC_TRIGGERED => Ok(MsgFunction::RcTriggered),
+            r570::NV_VGPU_MSG_EVENT_GPUACCT_PERFMON_UTIL_SAMPLES => {
+                Ok(MsgFunction::GpuacctPerfmonUtilSamples)
+            }
             r570::NV_VGPU_MSG_EVENT_UCODE_LIBOS_PRINT => Ok(MsgFunction::UcodeLibOsPrint),
             _ => Err(EINVAL),
         }
@@ -881,3 +885,40 @@ impl MessageQueueInitArguments {
         }
     }
 }
+
+/// VF (Virtual Function) info for SR-IOV passthrough to GSP-RM.
+///
+/// Populated from the PCI SR-IOV extended capability when vGPU support
+/// is enabled.
+#[derive(Clone, Copy, Zeroable)]
+#[repr(transparent)]
+pub(crate) struct GspVfInfo(pub(crate) r570::GSP_VF_INFO);
+
+impl GspVfInfo {
+    /// Reads SR-IOV capability data from the PCI extended configuration
+    /// space and builds the VF information required by GSP firmware.
+    pub(crate) fn new(pdev: &kernel::pci::Device<kernel::device::Bound>) -> Result<GspVfInfo> {
+        let total_vfs = pdev.sriov_get_totalvfs()?;
+
+        let cfg = pdev.config_space_extended()?;
+        let sriov = kernel::pci::ExtSriovCapability::find(&cfg)?;
+
+        Ok(GspVfInfo(r570::GSP_VF_INFO {
+            totalVFs: total_vfs.try_into().unwrap_or(0),
+            firstVFOffset: u32::from(kernel::io_read!(sriov, .vf_offset)),
+            b64bitBar0: u8::from(sriov.is_vf_bar_64bit(0)?),
+            FirstVFBar0Address: sriov.read_vf_bar64_addr(0)?,
+            b64bitBar1: u8::from(sriov.is_vf_bar_64bit(1)?),
+            FirstVFBar1Address: sriov.read_vf_bar64_addr(1)?,
+            b64bitBar2: u8::from(sriov.is_vf_bar_64bit(3)?),
+            FirstVFBar2Address: sriov.read_vf_bar64_addr(3)?,
+            ..Zeroable::zeroed()
+        }))
+    }
+}
+
+// SAFETY: Padding is explicit and does not contain uninitialized data.
+unsafe impl AsBytes for GspVfInfo {}
+
+// SAFETY: This struct only contains integer types for which all bit patterns are valid.
+unsafe impl FromBytes for GspVfInfo {}

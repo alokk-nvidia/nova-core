@@ -55,7 +55,8 @@ use crate::{
         },
         fw,
         fw::LibosMemoryRegionInitArgument,
-        GspFwWprMeta, //
+        GspFwWprMeta,
+        GspVfInfo, //
     },
     regs,
     vbios::Vbios,
@@ -458,12 +459,19 @@ impl super::Gsp {
             ctx.gsp_falcon.is_riscv_active(ctx.bar)
         );
 
+        // Build VF info if vGPU is requested.
+        let vf_info = if ctx.vgpu_requested {
+            Some(GspVfInfo::new(ctx.pdev)?)
+        } else {
+            None
+        };
+
         // GSP-RM discards any RPC seen before GSP_INIT, so the system-info
         // and registry data ride inline in the GSP_INIT NVKV payload. The
         // synchronous GSP_INIT reply arrives only after GSP-RM is fully up,
         // and any LOAD_EXEC events GSP-RM raises in the meantime are
         // dispatched inline by the GMC boot-event handler.
-        let init_payload = commands::build_gsp_init_payload(ctx.pdev, chipset)?;
+        let init_payload = commands::build_gsp_init_payload(ctx.pdev, chipset, vf_info.as_ref())?;
         let bootloader_app_version = gsp_fw.bootloader.app_version;
         let libos_dma_handle = self.libos.dma_handle();
         let info = commands::gsp_init(&self.cmdq, ctx.bar, &init_payload, |id, payload| {

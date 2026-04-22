@@ -20,6 +20,7 @@ use crate::{
     },
     gsp::{
         cmdq::Cmdq,
+        fw::GspVfInfo,
         nvkv, //
     },
 };
@@ -87,6 +88,7 @@ const REGISTRY_ENTRIES: &[(&str, u32)] = &[
 pub(crate) fn build_gsp_init_payload(
     pdev: &pci::Device<device::Bound>,
     chipset: Chipset,
+    vf_info: Option<&GspVfInfo>,
 ) -> Result<KVec<u8>> {
     let mut nvkv = nvkv::Builder::new();
 
@@ -128,6 +130,19 @@ pub(crate) fn build_gsp_init_payload(
         nvkv::oor_arch::NONE
     };
     nvkv.push_imm32(nvkv::sys_info_key::OOR_ARCH, oor_arch)?;
+
+    if let Some(vf) = vf_info {
+        use nvkv::sys_info_key::*;
+        nvkv.push_imm32(VF_TOTAL_VFS, vf.0.totalVFs)?;
+        nvkv.push_imm32(VF_FIRST_VF_OFFSET, vf.0.firstVFOffset)?;
+        let vf_flags = u64::from(vf.0.b64bitBar0)
+            | (u64::from(vf.0.b64bitBar1) << 1)
+            | (u64::from(vf.0.b64bitBar2) << 2);
+        nvkv.push_seq64(VF_FLAGS, vf_flags)?;
+        nvkv.push_seq64(VF_FIRST_BAR0_ADDRESS, vf.0.FirstVFBar0Address)?;
+        nvkv.push_seq64(VF_FIRST_BAR1_ADDRESS, vf.0.FirstVFBar1Address)?;
+        nvkv.push_seq64(VF_FIRST_BAR2_ADDRESS, vf.0.FirstVFBar2Address)?;
+    }
 
     for (name, value) in REGISTRY_ENTRIES {
         let mut name_bytes = KVec::with_capacity(name.len() + 1, GFP_KERNEL)?;

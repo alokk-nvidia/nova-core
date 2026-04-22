@@ -98,6 +98,18 @@ pub(crate) mod sys_info_key {
     pub(crate) const MAX_USER_VA: u16 = 4146;
     pub(crate) const REGKEY_NAME: u16 = 12400;
     pub(crate) const REGKEY_VALUE_U32: u16 = 12401;
+    /// VF total count (`IMM32`).
+    pub(crate) const VF_TOTAL_VFS: u16 = 0x0080;
+    /// VF first offset (`IMM32`).
+    pub(crate) const VF_FIRST_VF_OFFSET: u16 = 0x0081;
+    /// VF flags (`SEQ64`): bit0=64bit_bar0, bit1=64bit_bar1, bit2=64bit_bar2.
+    pub(crate) const VF_FLAGS: u16 = 0x1003;
+    /// VF first BAR0 address (`SEQ64`).
+    pub(crate) const VF_FIRST_BAR0_ADDRESS: u16 = 0x1050;
+    /// VF first BAR1 address (`SEQ64`).
+    pub(crate) const VF_FIRST_BAR1_ADDRESS: u16 = 0x1051;
+    /// VF first BAR2 address (`SEQ64`).
+    pub(crate) const VF_FIRST_BAR2_ADDRESS: u16 = 0x1052;
 }
 
 /// `NVGMC_SI_OOR_ARCH` wire values.
@@ -140,6 +152,12 @@ impl Builder {
     /// Appends an `OPCODE_IMM32` entry carrying a 32-bit immediate value.
     pub(crate) fn push_imm32(&mut self, key: u16, value: u32) -> Result {
         self.push_u64(make_header(OPCODE_IMM32, key, value))
+    }
+
+    /// Appends an `OPCODE_SEQ64` entry carrying a single `u64` value.
+    pub(crate) fn push_seq64(&mut self, key: u16, value: u64) -> Result {
+        self.push_u64(make_header(OPCODE_SEQ64, key, 1))?;
+        self.push_u64(value)
     }
 
     /// Appends an `OPCODE_ARRAY8` entry whose payload is `data`.

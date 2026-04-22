@@ -293,14 +293,12 @@ impl super::Gsp {
         ctx: &super::GspBootContext<'_>,
         wpr_meta: &Coherent<GspFwWprMeta>,
         libos: &Coherent<[LibosMemoryRegionInitArgument]>,
+        fsp_falcon: &Falcon<FspEngine>,
     ) -> Result {
         let dev = ctx.dev();
         let bar = ctx.bar;
         let chipset = ctx.chipset;
         let gsp_falcon = ctx.gsp_falcon;
-        let fsp_falcon = Falcon::<FspEngine>::new(dev, chipset)?;
-
-        Fsp::wait_secure_boot(dev, bar, chipset.arch())?;
 
         let fsp_fw = FspFirmware::new(dev, chipset)?;
 
@@ -322,7 +320,7 @@ impl super::Gsp {
             &signatures,
         )?;
 
-        Fsp::boot_fmc(dev, bar, &fsp_falcon, &args)?;
+        Fsp::boot_fmc(dev, bar, fsp_falcon, &args)?;
 
         let fmc_boot_params_addr = args.boot_params_dma_handle();
         Self::wait_for_gsp_lockdown_release(dev, bar, gsp_falcon, fmc_boot_params_addr)?;
@@ -367,15 +365,29 @@ impl super::Gsp {
     /// Upon return, the GSP is up and running, and its runtime object given as return value.
     pub(crate) fn boot(
         self: Pin<&mut Self>,
-        ctx: &super::GspBootContext<'_>,
+        ctx: &mut super::GspBootContext<'_>,
     ) -> Result<GetGspStaticInfoReply> {
-        let dev = ctx.dev();
+        let bar = ctx.bar;
+        let chipset = ctx.chipset;
         let uses_sec2 = matches!(
-            ctx.chipset.arch(),
+            chipset.arch(),
             Architecture::Turing | Architecture::Ampere | Architecture::Ada
         );
 
-        let gsp_fw = KBox::pin_init(GspFirmware::new(dev, ctx.chipset), GFP_KERNEL)?;
+        // For FSP-based architectures (Hopper/Blackwell), refine the vGPU
+        // request by reading the PRC knob from FSP.
+        if !uses_sec2 {
+            let fsp_falcon = Falcon::<FspEngine>::new(ctx.dev(), chipset)?;
+            Fsp::wait_secure_boot(ctx.dev(), bar, chipset.arch())?;
+            let vgpu_mode = Fsp::read_vgpu_mode(ctx.dev(), bar, &fsp_falcon)?;
+            dev_dbg!(ctx.dev(), "vGPU mode: {:?}\n", vgpu_mode);
+            ctx.fsp_falcon = Some(fsp_falcon);
+            ctx.vgpu_requested &= vgpu_mode == crate::fsp::VgpuMode::Enabled;
+        }
+
+        let dev = ctx.dev();
+
+        let gsp_fw = KBox::pin_init(GspFirmware::new(dev, chipset), GFP_KERNEL)?;
 
         dev_info!(
             dev,
@@ -386,7 +398,7 @@ impl super::Gsp {
 
         // Load the optional ucodes (bindata) firmware and build a radix3 page table.
         // GSP-RM uses this to load additional microcode at runtime.
-        let ucodes_radix3 = match crate::firmware::request_ucodes_firmware(dev, ctx.chipset) {
+        let ucodes_radix3 = match crate::firmware::request_ucodes_firmware(dev, chipset) {
             Ok(ucodes_fw) => Some(KBox::pin_init(
                 Radix3::new(dev, ucodes_fw.data()),
                 GFP_KERNEL,
@@ -397,7 +409,7 @@ impl super::Gsp {
             }
             Err(e) => return Err(e),
         };
-        let fb_layout = FbLayout::new(ctx.chipset, ctx.bar, &gsp_fw)?;
+        let fb_layout = FbLayout::new(chipset, ctx.bar, &gsp_fw)?;
         dev_dbg!(dev, "{:#x?}\n", fb_layout);
 
         let wpr_meta = Coherent::init(dev, GFP_KERNEL, GspFwWprMeta::new(&gsp_fw, &fb_layout))?;
@@ -420,7 +432,12 @@ impl super::Gsp {
         if uses_sec2 {
             Self::boot_via_sec2(ctx, &fb_layout, &self.libos, &wpr_meta)?;
         } else {
-            Self::boot_via_fsp(ctx, &wpr_meta, &self.libos)?;
+            Self::boot_via_fsp(
+                ctx,
+                &wpr_meta,
+                &self.libos,
+                ctx.fsp_falcon.as_ref().ok_or(ENODEV)?,
+            )?;
         }
 
         // Common post-boot initialization
@@ -446,7 +463,7 @@ impl super::Gsp {
         // synchronous GSP_INIT reply arrives only after GSP-RM is fully up,
         // and any LOAD_EXEC events GSP-RM raises in the meantime are
         // dispatched inline by the GMC boot-event handler.
-        let init_payload = commands::build_gsp_init_payload(ctx.pdev, ctx.chipset)?;
+        let init_payload = commands::build_gsp_init_payload(ctx.pdev, chipset)?;
         let bootloader_app_version = gsp_fw.bootloader.app_version;
         let libos_dma_handle = self.libos.dma_handle();
         let info = commands::gsp_init(&self.cmdq, ctx.bar, &init_payload, |id, payload| {

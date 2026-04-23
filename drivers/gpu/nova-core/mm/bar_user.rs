@@ -43,6 +43,30 @@ impl BarUser {
         })
     }
 
+    /// Map physical pages into the BAR1 address space, returning a [`MappedRange`].
+    ///
+    /// Unlike [`BarUser::map()`], the caller is responsible for calling
+    /// [`BarUser::unmap_pages()`] to release the mapping.
+    pub(crate) fn map_pages(
+        &mut self,
+        dev: &device::Device<device::Bound>,
+        mm: &GpuMm,
+        pfns: &[Pfn],
+        writable: bool,
+    ) -> Result<MappedRange> {
+        self.vmm.map_pages(dev, mm, pfns, None, writable)
+    }
+
+    /// Unmap a previously mapped range, invalidating PTEs and freeing VA.
+    pub(crate) fn unmap_pages(
+        &mut self,
+        dev: &device::Device<device::Bound>,
+        mm: &GpuMm,
+        range: MappedRange,
+    ) -> Result {
+        self.vmm.unmap_pages(dev, mm, range)
+    }
+
     /// Map physical pages to a contiguous BAR1 virtual range.
     pub(crate) fn map<'a>(
         &'a mut self,

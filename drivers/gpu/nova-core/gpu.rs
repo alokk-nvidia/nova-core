@@ -26,7 +26,9 @@ use kernel::{
 use crate::{
     bounded_enum,
     driver::{
-        Bar0, //
+        Bar0,
+        Bar1,
+        BAR1_SIZE, //
     },
     falcon::{
         gsp::Gsp as GspFalcon,
@@ -325,6 +327,8 @@ pub(crate) struct Gpu {
     /// vGPU state (SR-IOV / FSP PRC), behind Mutex for FFI concurrency.
     #[pin]
     pub(crate) vgpu: Mutex<VgpuManager>,
+    /// BAR1 MMIO mapping for vGPU, initialized when vGPU is requested.
+    pub(crate) bar1: Option<Arc<Devres<Bar1>>>,
     /// GSP runtime data.
     #[pin]
     pub(crate) gsp: Gsp,
@@ -333,8 +337,8 @@ pub(crate) struct Gpu {
     /// GPU memory manager owning memory management resources.
     #[pin]
     pub(crate) mm: GpuMm,
-    /// BAR1 user interface for CPU access to GPU virtual memory.
-    bar_user: BarUser,
+    /// BAR1 user interface for CPU access to GPU virtual memory (shared).
+    pub(crate) bar_user: Arc<Mutex<BarUser>>,
     /// fwctl device registration for GMC API pass-through.
     #[pin]
     _fwctl_reg: Devres<fwctl::Registration<crate::fwctl::NovaCoreFwCtl>>,
@@ -386,6 +390,18 @@ impl Gpu {
 
                 vgpu <- new_mutex!(VgpuManager::new(pdev, chipset.arch())?, "vgpu_manager"),
 
+                bar1: {
+                    let mgr = vgpu.lock();
+                    if mgr.vgpu_requested {
+                        Some(Arc::pin_init(
+                            pdev.iomap_region_sized::<BAR1_SIZE>(2, c"nova-core/bar1"),
+                            GFP_KERNEL,
+                        )?)
+                    } else {
+                        None
+                    }
+                },
+
                 gsp <- Gsp::new(pdev, chipset, build_id.as_ref()),
 
                 gsp_static_info: {
@@ -423,7 +439,13 @@ impl Gpu {
                 bar_user: {
                     let pdb_addr = VramAddress::new(gsp_static_info.bar1_pde_base);
                     let bar1_size = pdev.resource_len(2)?;
-                    BarUser::new(pdb_addr, spec.chipset, bar1_size)?
+                    Arc::pin_init(
+                        new_mutex!(
+                            BarUser::new(pdb_addr, spec.chipset, bar1_size)?,
+                            "bar_user"
+                        ),
+                        GFP_KERNEL,
+                    )?
                 },
 
                 mm <- {

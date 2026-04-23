@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 
+mod mm;
+
 use kernel::{
     device,
     pci,

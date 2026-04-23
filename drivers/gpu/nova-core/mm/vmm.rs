@@ -63,8 +63,8 @@ pub(crate) struct PreparedMapping {
 /// PTEs and free the VA range. Dropping without unmapping logs a warning
 /// and leaks the VA range in the maple tree.
 pub(crate) struct MappedRange {
-    pub(super) vfn_start: Vfn,
-    pub(super) num_pages: usize,
+    pub(crate) vfn_start: Vfn,
+    pub(crate) num_pages: usize,
     /// Logs a warning if dropped without unmapping.
     _drop_guard: MustUnmapGuard,
 }

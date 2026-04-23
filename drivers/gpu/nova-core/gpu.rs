@@ -50,7 +50,10 @@ use crate::{
         VramAddress, //
     },
     regs,
-    vgpu::VgpuManager,
+    vgpu::{
+        ChidAllocator,
+        VgpuManager, //
+    },
 };
 
 mod hal;
@@ -329,6 +332,9 @@ pub(crate) struct Gpu {
     pub(crate) vgpu: Mutex<VgpuManager>,
     /// BAR1 MMIO mapping for vGPU, initialized when vGPU is requested.
     pub(crate) bar1: Option<Arc<Devres<Bar1>>>,
+    /// Channel ID allocator for vGPU instances.
+    #[pin]
+    pub(crate) chid_allocator: Mutex<ChidAllocator>,
     /// GSP runtime data.
     #[pin]
     pub(crate) gsp: Gsp,
@@ -401,6 +407,8 @@ impl Gpu {
                         None
                     }
                 },
+
+                chid_allocator <- new_mutex!(ChidAllocator::new(0), "chid_allocator"),
 
                 gsp <- Gsp::new(pdev, chipset, build_id.as_ref()),
 

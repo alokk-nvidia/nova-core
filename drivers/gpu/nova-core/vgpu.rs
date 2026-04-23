@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
 
+mod chan;
 mod mm;
+
+pub(crate) use self::chan::ChidAllocator;
 
 use kernel::{
     device,

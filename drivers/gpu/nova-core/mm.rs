@@ -33,6 +33,7 @@ macro_rules! impl_pfn_bounded {
 }
 
 pub(crate) mod pramin;
+pub(super) mod tlb;
 
 use kernel::{
     bitfield,

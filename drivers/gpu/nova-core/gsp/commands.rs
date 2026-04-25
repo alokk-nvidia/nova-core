@@ -31,7 +31,6 @@ const GSP_INIT_MAX_RESPONSE_SIZE: u32 = 8192;
 pub(crate) struct GetGspStaticInfoReply {
     gpu_name: [u8; 64],
     /// Usable FB (VRAM) region for driver memory allocation.
-    #[expect(dead_code)]
     pub(crate) usable_fb_region: Range<u64>,
     /// End of physical VRAM (exclusive), covering all FB regions.
     pub(crate) total_fb_end: u64,

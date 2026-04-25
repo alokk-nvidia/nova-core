@@ -9,10 +9,13 @@ use kernel::{
     },
     fmt,
     fwctl,
+    gpu::buddy::GpuBuddyParams,
     io::Io,
     num::Bounded,
     pci,
     prelude::*,
+    ptr::Alignment,
+    sizes::SZ_4K,
     sync::Arc, //
 };
 
@@ -31,6 +34,7 @@ use crate::{
         commands::GetGspStaticInfoReply,
         Gsp, //
     },
+    mm::GpuMm,
     regs,
 };
 
@@ -299,6 +303,9 @@ pub(crate) struct Gpu {
     #[pin]
     gsp: Gsp,
     gsp_static_info: GetGspStaticInfoReply,
+    /// GPU memory manager owning memory management resources.
+    #[pin]
+    mm: GpuMm,
     /// fwctl device registration for GMC API pass-through.
     #[pin]
     _fwctl_reg: Devres<fwctl::Registration<crate::fwctl::NovaCoreFwCtl>>,
@@ -368,7 +375,25 @@ impl Gpu {
                         info.total_fb_end >> 20
                     );
 
+                    dev_info!(
+                        pdev.as_ref(),
+                        "Using FB region: {:#x}..{:#x}\n",
+                        info.usable_fb_region.start,
+                        info.usable_fb_region.end
+                    );
+
                     info
+                },
+
+                mm <- {
+                    let usable_vram = &gsp_static_info.usable_fb_region;
+
+                    let pramin_vram_region = 0..gsp_static_info.total_fb_end;
+                    GpuMm::new(devres_bar.clone(), pdev.as_ref(), GpuBuddyParams {
+                        base_offset: usable_vram.start,
+                        size: usable_vram.end - usable_vram.start,
+                        chunk_size: Alignment::new::<SZ_4K>(),
+                    }, pramin_vram_region)?
                 },
 
                 _fwctl_reg <- {

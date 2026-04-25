@@ -94,12 +94,12 @@ use crate::{
 };
 
 use kernel::{
+    device,
     devres::Devres,
     io::Io,
     new_mutex,
     num::Bounded,
     prelude::*,
-    revocable::RevocableGuard,
     sizes::{
         SZ_1M,
         SZ_64K, //
@@ -137,7 +137,7 @@ macro_rules! define_pramin_read {
                 self.compute_window(vram_offset, ::core::mem::size_of::<$ty>())?;
 
             if let Some(base) = new_base {
-                Self::write_window_base(&self.bar, base)?;
+                Self::write_window_base(self.bar, base)?;
                 *self.state = base;
             }
             self.bar.$name(bar_offset)
@@ -154,7 +154,7 @@ macro_rules! define_pramin_write {
                 self.compute_window(vram_offset, ::core::mem::size_of::<$ty>())?;
 
             if let Some(base) = new_base {
-                Self::write_window_base(&self.bar, base)?;
+                Self::write_window_base(self.bar, base)?;
                 *self.state = base;
             }
             self.bar.$name(value, bar_offset)
@@ -188,10 +188,11 @@ impl Pramin {
     /// `vram_region` specifies the valid VRAM address range.
     pub(crate) fn new(
         bar: Arc<Devres<Bar0>>,
+        dev: &device::Device<device::Bound>,
         vram_region: Range<u64>,
     ) -> Result<impl PinInit<Self>> {
-        let bar_access = bar.try_access().ok_or(ENODEV)?;
-        let current_base = Self::read_window_base(&bar_access);
+        let bar_access = bar.access(dev)?;
+        let current_base = Self::read_window_base(bar_access);
 
         Ok(pin_init!(Self {
             bar,
@@ -204,8 +205,11 @@ impl Pramin {
     ///
     /// Returns a [`PraminWindow`] guard that provides VRAM read/write accessors.
     /// The [`PraminWindow`] is exclusive and only one can exist at a time.
-    pub(crate) fn get_window(&self) -> Result<PraminWindow<'_>> {
-        let bar = self.bar.try_access().ok_or(ENODEV)?;
+    pub(crate) fn get_window<'a>(
+        &'a self,
+        dev: &'a device::Device<device::Bound>,
+    ) -> Result<PraminWindow<'a>> {
+        let bar = self.bar.access(dev)?;
         let state = self.state.lock();
         Ok(PraminWindow {
             bar,
@@ -231,7 +235,7 @@ impl Pramin {
 /// Only one [`PraminWindow`] can exist at a time per [`Pramin`] instance (enforced by the
 /// internal `MutexGuard`).
 pub(crate) struct PraminWindow<'a> {
-    bar: RevocableGuard<'a, Bar0>,
+    bar: &'a Bar0,
     vram_region: Range<u64>,
     state: MutexGuard<'a, u64>,
 }

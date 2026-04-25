@@ -35,7 +35,6 @@ pub(crate) struct GetGspStaticInfoReply {
     /// End of physical VRAM (exclusive), covering all FB regions.
     pub(crate) total_fb_end: u64,
     /// BAR1 Page Directory Entry base address.
-    #[expect(dead_code)]
     pub(crate) bar1_pde_base: u64,
 }
 

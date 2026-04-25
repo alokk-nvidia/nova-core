@@ -201,6 +201,11 @@ impl Pramin {
         }))
     }
 
+    /// Returns the valid VRAM region for this PRAMIN instance.
+    fn vram_region(&self) -> &Range<u64> {
+        &self.vram_region
+    }
+
     /// Acquire exclusive PRAMIN access.
     ///
     /// Returns a [`PraminWindow`] guard that provides VRAM read/write accessors.
@@ -301,4 +306,210 @@ impl PraminWindow<'_> {
     define_pramin_write!(try_write16, u16);
     define_pramin_write!(try_write32, u32);
     define_pramin_write!(try_write64, u64);
+}
+
+/// Offset within the VRAM region to use as the self-test area.
+#[cfg(CONFIG_NOVA_MM_SELFTESTS)]
+const SELFTEST_REGION_OFFSET: usize = 0x1000;
+
+/// Test read/write at byte-aligned locations.
+#[cfg(CONFIG_NOVA_MM_SELFTESTS)]
+fn test_byte_readwrite(
+    dev: &kernel::device::Device,
+    win: &mut PraminWindow<'_>,
+    base: usize,
+) -> Result {
+    for i in 0u8..4 {
+        let offset = base + 1 + usize::from(i);
+        let val = 0xA0 + i;
+        win.try_write8(offset, val)?;
+        let read_val = win.try_read8(offset)?;
+        if read_val != val {
+            dev_err!(
+                dev,
+                "PRAMIN: FAIL - offset {:#x}: wrote {:#x}, read {:#x}\n",
+                offset,
+                val,
+                read_val
+            );
+            return Err(EIO);
+        }
+    }
+    Ok(())
+}
+
+/// Test writing a `u32` and reading back as individual `u8`s.
+#[cfg(CONFIG_NOVA_MM_SELFTESTS)]
+fn test_u32_as_bytes(
+    dev: &kernel::device::Device,
+    win: &mut PraminWindow<'_>,
+    base: usize,
+) -> Result {
+    let offset = base + 0x10;
+    let val: u32 = 0xDEADBEEF;
+    win.try_write32(offset, val)?;
+
+    // Read back as individual bytes (little-endian: EF BE AD DE).
+    let expected_bytes: [u8; 4] = [0xEF, 0xBE, 0xAD, 0xDE];
+    for (i, &expected) in expected_bytes.iter().enumerate() {
+        let read_val = win.try_read8(offset + i)?;
+        if read_val != expected {
+            dev_err!(
+                dev,
+                "PRAMIN: FAIL - offset {:#x}: expected {:#x}, read {:#x}\n",
+                offset + i,
+                expected,
+                read_val
+            );
+            return Err(EIO);
+        }
+    }
+    Ok(())
+}
+
+/// Test window repositioning across 1MB boundaries.
+#[cfg(CONFIG_NOVA_MM_SELFTESTS)]
+fn test_window_reposition(
+    dev: &kernel::device::Device,
+    win: &mut PraminWindow<'_>,
+    base: usize,
+) -> Result {
+    let offset_a: usize = base;
+    let offset_b: usize = base + 0x200000; // base + 2MB (different 1MB region).
+    let val_a: u32 = 0x11111111;
+    let val_b: u32 = 0x22222222;
+
+    win.try_write32(offset_a, val_a)?;
+    win.try_write32(offset_b, val_b)?;
+
+    let read_b = win.try_read32(offset_b)?;
+    if read_b != val_b {
+        dev_err!(
+            dev,
+            "PRAMIN: FAIL - offset {:#x}: expected {:#x}, read {:#x}\n",
+            offset_b,
+            val_b,
+            read_b
+        );
+        return Err(EIO);
+    }
+
+    let read_a = win.try_read32(offset_a)?;
+    if read_a != val_a {
+        dev_err!(
+            dev,
+            "PRAMIN: FAIL - offset {:#x}: expected {:#x}, read {:#x}\n",
+            offset_a,
+            val_a,
+            read_a
+        );
+        return Err(EIO);
+    }
+    Ok(())
+}
+
+/// Test that offsets outside the VRAM region are rejected.
+#[cfg(CONFIG_NOVA_MM_SELFTESTS)]
+fn test_invalid_offset(
+    dev: &kernel::device::Device,
+    win: &mut PraminWindow<'_>,
+    vram_end: u64,
+) -> Result {
+    let invalid_offset: usize = vram_end.into_safe_cast();
+    let result = win.try_read32(invalid_offset);
+    if result.is_ok() {
+        dev_err!(
+            dev,
+            "PRAMIN: FAIL - read at invalid offset {:#x} should have failed\n",
+            invalid_offset
+        );
+        return Err(EIO);
+    }
+    Ok(())
+}
+
+/// Test that misaligned multi-byte accesses are rejected.
+#[cfg(CONFIG_NOVA_MM_SELFTESTS)]
+fn test_misaligned_access(
+    dev: &kernel::device::Device,
+    win: &mut PraminWindow<'_>,
+    base: usize,
+) -> Result {
+    // `u16` at odd offset (not 2-byte aligned).
+    let offset_u16 = base + 0x21;
+    if win.try_write16(offset_u16, 0xABCD).is_ok() {
+        dev_err!(
+            dev,
+            "PRAMIN: FAIL - misaligned u16 write at {:#x} should have failed\n",
+            offset_u16
+        );
+        return Err(EIO);
+    }
+
+    // `u32` at 2-byte-aligned (not 4-byte-aligned) offset.
+    let offset_u32 = base + 0x32;
+    if win.try_write32(offset_u32, 0x12345678).is_ok() {
+        dev_err!(
+            dev,
+            "PRAMIN: FAIL - misaligned u32 write at {:#x} should have failed\n",
+            offset_u32
+        );
+        return Err(EIO);
+    }
+
+    // `u64` read at 4-byte-aligned (not 8-byte-aligned) offset.
+    let offset_u64 = base + 0x44;
+    if win.try_read64(offset_u64).is_ok() {
+        dev_err!(
+            dev,
+            "PRAMIN: FAIL - misaligned u64 read at {:#x} should have failed\n",
+            offset_u64
+        );
+        return Err(EIO);
+    }
+    Ok(())
+}
+
+/// Run PRAMIN self-tests during boot if self-tests are enabled.
+#[cfg(CONFIG_NOVA_MM_SELFTESTS)]
+pub(crate) fn run_self_test(
+    pdev: &device::Device<device::Bound>,
+    pramin: &Pramin,
+    chipset: crate::gpu::Chipset,
+) -> Result {
+    use crate::gpu::Architecture;
+
+    let dev = pdev.as_ref();
+
+    // PRAMIN uses NV_PBUS_BAR0_WINDOW which is only available on pre-Hopper GPUs.
+    // Hopper+ uses NV_XAL_EP_BAR0_WINDOW instead, requiring a separate HAL that
+    // has not been implemented yet.
+    if !matches!(
+        chipset.arch(),
+        Architecture::Turing | Architecture::Ampere | Architecture::Ada
+    ) {
+        dev_info!(
+            dev,
+            "PRAMIN: Skipping self-tests for {:?} (only pre-Hopper supported)\n",
+            chipset
+        );
+        return Ok(());
+    }
+
+    dev_info!(dev, "PRAMIN: Starting self-test...\n");
+
+    let vram_region = pramin.vram_region();
+    let base: usize = vram_region.start.into_safe_cast();
+    let base = base + SELFTEST_REGION_OFFSET;
+    let vram_end = vram_region.end;
+    let mut win = pramin.get_window(pdev)?;
+
+    test_byte_readwrite(dev, &mut win, base)?;
+    test_u32_as_bytes(dev, &mut win, base)?;
+    test_window_reposition(dev, &mut win, base)?;
+    test_invalid_offset(dev, &mut win, vram_end)?;
+    test_misaligned_access(dev, &mut win, base)?;
+
+    dev_info!(dev, "PRAMIN: All self-tests PASSED\n");
+    Ok(())
 }

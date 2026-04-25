@@ -25,7 +25,10 @@ use pin_init::Zeroable;
 use super::{
     AperturePde,
     AperturePte,
+    DualPdeOps,
     PageTableLevel,
+    PdeOps,
+    PteOps,
     VaLevelIndex, //
 };
 use crate::mm::{
@@ -194,12 +197,12 @@ bitfield! {
 
 impl Pte {
     /// Create a PTE from a `u64` value.
-    pub(super) fn new(val: u64) -> Self {
+    pub(super) fn new_raw(val: u64) -> Self {
         Self::from_raw(val)
     }
 
     /// Create a valid PTE for video memory.
-    pub(super) fn new_vram(frame: Pfn, writable: bool) -> Self {
+    fn new_vram_inner(frame: Pfn, writable: bool) -> Self {
         let pcf = if writable { PtePcf::rw() } else { PtePcf::ro() };
         Self::zeroed()
             .with_valid(true)
@@ -207,14 +210,30 @@ impl Pte {
             .with_pcf(pcf)
             .with_frame_number(frame)
     }
+}
 
-    /// Create an invalid PTE.
-    pub(super) fn invalid() -> Self {
+impl PteOps for Pte {
+    fn new(val: u64) -> Self {
+        Self::from_raw(val)
+    }
+
+    fn invalid() -> Self {
         Self::zeroed()
     }
 
-    /// Get the raw `u64` value.
-    pub(super) fn raw_u64(&self) -> u64 {
+    fn new_vram(pfn: Pfn, writable: bool) -> Self {
+        Self::new_vram_inner(pfn, writable)
+    }
+
+    fn is_valid(&self) -> bool {
+        self.valid().into_bool()
+    }
+
+    fn frame_number(&self) -> Pfn {
+        Pte::frame_number(*self)
+    }
+
+    fn raw_u64(&self) -> u64 {
         self.into_raw()
     }
 }
@@ -237,40 +256,50 @@ bitfield! {
 
 impl Pde {
     /// Create a PDE from a `u64` value.
-    pub(super) fn new(val: u64) -> Self {
+    pub(super) fn new_raw(val: u64) -> Self {
         Self::from_raw(val)
     }
 
     /// Create a valid PDE pointing to a page table in video memory.
-    pub(super) fn new_vram(table_pfn: Pfn) -> Self {
+    fn new_vram_inner(table_pfn: Pfn) -> Self {
         Self::zeroed()
             .with_is_pte(false)
             .with_aperture(AperturePde::VideoMemory)
             .with_table_frame(table_pfn)
     }
+}
 
-    /// Create an invalid PDE.
-    pub(super) fn invalid() -> Self {
+impl PdeOps for Pde {
+    fn new(val: u64) -> Self {
+        Self::from_raw(val)
+    }
+
+    fn new_vram(table_pfn: Pfn) -> Self {
+        Self::new_vram_inner(table_pfn)
+    }
+
+    fn invalid() -> Self {
         Self::zeroed().with_aperture(AperturePde::Invalid)
     }
 
-    /// Check if this PDE is valid.
-    pub(super) fn is_valid(&self) -> bool {
-        self.aperture() != AperturePde::Invalid
+    fn is_valid(&self) -> bool {
+        Pde::aperture(*self) != AperturePde::Invalid
     }
 
-    /// Get the VRAM address of the page table.
-    pub(super) fn table_vram_address(&self) -> VramAddress {
+    fn aperture(&self) -> AperturePde {
+        Pde::aperture(*self)
+    }
+
+    fn table_vram_address(&self) -> VramAddress {
         debug_assert!(
-            self.aperture() == AperturePde::VideoMemory,
+            Pde::aperture(*self) == AperturePde::VideoMemory,
             "table_vram_address called on non-VRAM PDE (aperture: {:?})",
-            self.aperture()
+            Pde::aperture(*self)
         );
         VramAddress::from(self.table_frame())
     }
 
-    /// Get the raw `u64` value.
-    pub(super) fn raw_u64(&self) -> u64 {
+    fn raw_u64(&self) -> u64 {
         self.into_raw()
     }
 }
@@ -363,29 +392,40 @@ pub(in crate::mm) struct DualPde {
 unsafe impl Zeroable for DualPde {}
 
 impl DualPde {
-    /// Create a dual PDE from raw 128-bit value (two `u64`s).
-    pub(super) fn new(big: u64, small: u64) -> Self {
-        Self {
-            big: DualPdeBig::new(big),
-            small: Pde::new(small),
-        }
-    }
-
-    /// Create a dual PDE with only the small page table pointer set.
-    pub(super) fn new_small(table_pfn: Pfn) -> Self {
-        Self {
-            big: DualPdeBig::invalid(),
-            small: Pde::new_vram(table_pfn),
-        }
-    }
-
-    /// Check if the small page table pointer is valid.
-    pub(super) fn has_small(&self) -> bool {
-        self.small.is_valid()
-    }
-
     /// Check if the big page table pointer is valid.
     fn has_big(&self) -> bool {
         self.big.is_valid()
+    }
+}
+
+impl DualPdeOps for DualPde {
+    fn new(big: u64, small: u64) -> Self {
+        Self {
+            big: DualPdeBig::new(big),
+            small: PdeOps::new(small),
+        }
+    }
+
+    fn new_small(table_pfn: Pfn) -> Self {
+        Self {
+            big: DualPdeBig::invalid(),
+            small: PdeOps::new_vram(table_pfn),
+        }
+    }
+
+    fn has_small(&self) -> bool {
+        PdeOps::is_valid(&self.small)
+    }
+
+    fn small_vram_address(&self) -> VramAddress {
+        PdeOps::table_vram_address(&self.small)
+    }
+
+    fn big_raw_u64(&self) -> u64 {
+        self.big.raw_u64()
+    }
+
+    fn small_raw_u64(&self) -> u64 {
+        PdeOps::raw_u64(&self.small)
     }
 }

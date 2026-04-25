@@ -5,6 +5,7 @@ config NOVA_CORE
 	depends on RUST
 	select AUXILIARY_BUS
 	select FWCTL
+	select GPU_BUDDY
 	select RUST_FWCTL_ABSTRACTIONS
 	select RUST_FW_LOADER_ABSTRACTIONS
 	default n

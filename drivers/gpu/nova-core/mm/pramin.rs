@@ -479,7 +479,7 @@ pub(crate) fn run_self_test(
 ) -> Result {
     use crate::gpu::Architecture;
 
-    let dev = pdev.as_ref();
+    let dev = pdev;
 
     // PRAMIN uses NV_PBUS_BAR0_WINDOW which is only available on pre-Hopper GPUs.
     // Hopper+ uses NV_XAL_EP_BAR0_WINDOW instead, requiring a separate HAL that

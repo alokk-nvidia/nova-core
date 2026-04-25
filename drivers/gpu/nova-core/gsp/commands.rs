@@ -34,6 +34,9 @@ pub(crate) struct GetGspStaticInfoReply {
     pub(crate) usable_fb_region: Range<u64>,
     /// End of physical VRAM (exclusive), covering all FB regions.
     pub(crate) total_fb_end: u64,
+    /// BAR1 Page Directory Entry base address.
+    #[expect(dead_code)]
+    pub(crate) bar1_pde_base: u64,
 }
 
 /// Error type for [`GetGspStaticInfoReply::gpu_name`].
@@ -177,11 +180,18 @@ pub(crate) fn gsp_init(
                         .ok_or(ENODEV)?;
                     let total_fb_end = total_fb_end(&blob)?
                         .ok_or(ENODEV)?;
+                    let bar1_pde_base = nvkv::find_seq64_indexed(
+                        &blob,
+                        nvkv::gsp_config_key::BAR1_PDE_BASE,
+                        0,
+                    )?
+                    .ok_or(ENODEV)?;
 
                     Ok(Some(GetGspStaticInfoReply {
                         gpu_name,
                         usable_fb_region,
                         total_fb_end,
+                        bar1_pde_base,
                     }))
                 } else {
                     on_boot_event(id, p0)?;

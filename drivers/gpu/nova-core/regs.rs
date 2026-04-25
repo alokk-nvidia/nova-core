@@ -30,6 +30,7 @@ use crate::{
         Architecture,
         Chipset, //
     },
+    mm::pramin::Bar0WindowTarget,
     num::FromSafeCast,
 };
 
@@ -112,6 +113,15 @@ register! {
     /// Scratch register 0xe used as FRTS firmware error code.
     pub(crate) NV_PBUS_SW_SCRATCH_0E_FRTS_ERR(u32) => NV_PBUS_SW_SCRATCH[0xe] {
         31:16   frts_err_code;
+    }
+}
+
+register! {
+    /// BAR0 window control for PRAMIN access.
+    pub(crate) NV_PBUS_BAR0_WINDOW(u32) @ 0x00001700 {
+        25:24   target ?=> Bar0WindowTarget;
+        /// Window base address (bits 39:16 of FB addr).
+        23:0    window_base;
     }
 }
 

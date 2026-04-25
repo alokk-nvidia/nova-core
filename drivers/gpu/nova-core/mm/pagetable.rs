@@ -8,6 +8,8 @@
 
 #![expect(dead_code)]
 
+pub(super) mod ver2;
+
 use kernel::num::Bounded;
 
 use crate::gpu::Architecture;

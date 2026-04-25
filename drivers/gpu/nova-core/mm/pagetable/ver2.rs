@@ -16,7 +16,10 @@ use pin_init::Zeroable;
 use super::{
     AperturePde,
     AperturePte,
+    DualPdeOps,
     PageTableLevel,
+    PdeOps,
+    PteOps,
     VaLevelIndex, //
 };
 use crate::mm::{
@@ -116,12 +119,12 @@ bitfield! {
 
 impl Pte {
     /// Create a `PTE` from a `u64` value.
-    pub(super) fn new(val: u64) -> Self {
+    pub(super) fn new_raw(val: u64) -> Self {
         Self::from_raw(val)
     }
 
     /// Create a valid `PTE` for video memory.
-    pub(super) fn new_vram(pfn: Pfn, writable: bool) -> Self {
+    fn new_vram_inner(pfn: Pfn, writable: bool) -> Self {
         Self::zeroed()
             .with_valid(true)
             .with_aperture(AperturePte::VideoMemory)
@@ -129,21 +132,37 @@ impl Pte {
             .with_read_only(!writable)
     }
 
-    /// Create an invalid `PTE`.
-    pub(super) fn invalid() -> Self {
-        Self::zeroed()
-    }
-
     /// Get the frame number based on aperture type.
-    pub(super) fn frame_number(&self) -> Pfn {
+    fn frame_number_by_aperture(&self) -> Pfn {
         match self.aperture() {
             AperturePte::VideoMemory => self.frame_number_vid(),
             _ => self.frame_number_sys(),
         }
     }
+}
 
-    /// Get the raw `u64` value.
-    pub(super) fn raw_u64(&self) -> u64 {
+impl PteOps for Pte {
+    fn new(val: u64) -> Self {
+        Self::from_raw(val)
+    }
+
+    fn invalid() -> Self {
+        Self::zeroed()
+    }
+
+    fn new_vram(pfn: Pfn, writable: bool) -> Self {
+        Self::new_vram_inner(pfn, writable)
+    }
+
+    fn is_valid(&self) -> bool {
+        self.valid().into_bool()
+    }
+
+    fn frame_number(&self) -> Pfn {
+        self.frame_number_by_aperture()
+    }
+
+    fn raw_u64(&self) -> u64 {
         self.into_raw()
     }
 }
@@ -171,28 +190,16 @@ bitfield! {
 
 impl Pde {
     /// Create a `PDE` from a `u64` value.
-    pub(super) fn new(val: u64) -> Self {
+    pub(super) fn new_raw(val: u64) -> Self {
         Self::from_raw(val)
     }
 
     /// Create a valid `PDE` pointing to a page table in video memory.
-    pub(super) fn new_vram(table_pfn: Pfn) -> Self {
+    fn new_vram_inner(table_pfn: Pfn) -> Self {
         Self::zeroed()
             .with_valid_inverted(false) // 0 = valid
             .with_aperture(AperturePde::VideoMemory)
             .with_table_frame_vid(table_pfn)
-    }
-
-    /// Create an invalid `PDE`.
-    pub(super) fn invalid() -> Self {
-        Self::zeroed()
-            .with_valid_inverted(true)
-            .with_aperture(AperturePde::Invalid)
-    }
-
-    /// Check if this `PDE` is valid.
-    pub(super) fn is_valid(&self) -> bool {
-        !self.valid_inverted().into_bool() && self.aperture() != AperturePde::Invalid
     }
 
     /// Get the table frame number based on aperture type.
@@ -202,19 +209,42 @@ impl Pde {
             _ => self.table_frame_sys(),
         }
     }
+}
 
-    /// Get the `VRAM` address of the page table.
-    pub(super) fn table_vram_address(&self) -> VramAddress {
+impl PdeOps for Pde {
+    fn new(val: u64) -> Self {
+        Self::from_raw(val)
+    }
+
+    fn new_vram(table_pfn: Pfn) -> Self {
+        Self::new_vram_inner(table_pfn)
+    }
+
+    fn invalid() -> Self {
+        Self::zeroed()
+            .with_valid_inverted(true)
+            .with_aperture(AperturePde::Invalid)
+    }
+
+    fn is_valid(&self) -> bool {
+        !self.valid_inverted().into_bool() && self.aperture() != AperturePde::Invalid
+    }
+
+    fn aperture(&self) -> AperturePde {
+        // Delegate to bitfield getter (takes self by value, Copy).
+        Pde::aperture(*self)
+    }
+
+    fn table_vram_address(&self) -> VramAddress {
         debug_assert!(
-            self.aperture() == AperturePde::VideoMemory,
+            Pde::aperture(*self) == AperturePde::VideoMemory,
             "table_vram_address called on non-VRAM PDE (aperture: {:?})",
-            self.aperture()
+            Pde::aperture(*self)
         );
         VramAddress::from(self.table_frame_vid())
     }
 
-    /// Get the raw `u64` value of the `PDE`.
-    pub(super) fn raw_u64(&self) -> u64 {
+    fn raw_u64(&self) -> u64 {
         self.into_raw()
     }
 }
@@ -232,39 +262,45 @@ pub(in crate::mm) struct DualPde {
 }
 
 impl DualPde {
-    /// Create a dual `PDE` from raw 128-bit value (two `u64`s).
-    pub(super) fn new(big: u64, small: u64) -> Self {
-        Self {
-            big: Pde::new(big),
-            small: Pde::new(small),
-        }
-    }
-
-    /// Create a dual `PDE` with only the small page table pointer set.
-    ///
-    /// Note: The big (LPT) portion is set to 0, not `Pde::invalid()`.
-    /// According to hardware documentation, clearing bit 0 of the 128-bit
-    /// entry makes the PDE behave as a "normal" PDE. Using `Pde::invalid()`
-    /// would set bit 0 (valid_inverted), which breaks page table walking.
-    pub(super) fn new_small(table_pfn: Pfn) -> Self {
-        Self {
-            big: Pde::new(0),
-            small: Pde::new_vram(table_pfn),
-        }
-    }
-
-    /// Check if the small page table pointer is valid.
-    pub(super) fn has_small(&self) -> bool {
-        self.small.is_valid()
-    }
-
     /// Check if the big page table pointer is valid.
     fn has_big(&self) -> bool {
-        self.big.is_valid()
+        PdeOps::is_valid(&self.big)
     }
 
     /// Get the small page table `Pfn`.
     fn small_pfn(&self) -> Pfn {
         self.small.table_frame()
+    }
+}
+
+impl DualPdeOps for DualPde {
+    fn new(big: u64, small: u64) -> Self {
+        Self {
+            big: PdeOps::new(big),
+            small: PdeOps::new(small),
+        }
+    }
+
+    fn new_small(table_pfn: Pfn) -> Self {
+        Self {
+            big: PdeOps::new(0),
+            small: PdeOps::new_vram(table_pfn),
+        }
+    }
+
+    fn has_small(&self) -> bool {
+        PdeOps::is_valid(&self.small)
+    }
+
+    fn small_vram_address(&self) -> VramAddress {
+        PdeOps::table_vram_address(&self.small)
+    }
+
+    fn big_raw_u64(&self) -> u64 {
+        PdeOps::raw_u64(&self.big)
+    }
+
+    fn small_raw_u64(&self) -> u64 {
+        PdeOps::raw_u64(&self.small)
     }
 }

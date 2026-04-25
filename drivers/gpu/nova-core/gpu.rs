@@ -34,7 +34,12 @@ use crate::{
         commands::GetGspStaticInfoReply,
         Gsp, //
     },
-    mm::GpuMm,
+    mm::{
+        bar_user::BarUser,
+        pagetable::MmuVersion,
+        GpuMm,
+        VramAddress, //
+    },
     regs,
 };
 
@@ -144,6 +149,11 @@ impl Chipset {
     /// This includes all chipsets < GA102.
     pub(crate) const fn needs_fwsec_bootloader(self) -> bool {
         matches!(self.arch(), Architecture::Turing) || matches!(self, Self::GA100)
+    }
+
+    /// Returns the MMU version for this chipset.
+    pub(crate) fn mmu_version(self) -> MmuVersion {
+        MmuVersion::from(self.arch())
     }
 
     /// Returns the FSP Chain of Trust (COT) protocol version for this chipset.
@@ -303,6 +313,8 @@ pub(crate) struct Gpu {
     #[pin]
     gsp: Gsp,
     gsp_static_info: GetGspStaticInfoReply,
+    /// BAR1 user interface for CPU access to GPU virtual memory.
+    bar_user: BarUser,
     /// GPU memory manager owning memory management resources.
     #[pin]
     mm: GpuMm,
@@ -383,6 +395,12 @@ impl Gpu {
                     );
 
                     info
+                },
+
+                bar_user: {
+                    let pdb_addr = VramAddress::new(gsp_static_info.bar1_pde_base);
+                    let bar1_size = pdev.resource_len(2)?;
+                    BarUser::new(pdb_addr, spec.chipset, bar1_size)?
                 },
 
                 mm <- {

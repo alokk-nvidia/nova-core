@@ -41,7 +41,7 @@ const BAR0_SIZE: usize = SZ_16M;
 
 pub(crate) type Bar0 = pci::Bar<BAR0_SIZE>;
 
-const BAR1_SIZE: usize = SZ_256M;
+pub(crate) const BAR1_SIZE: usize = SZ_256M;
 
 pub(crate) type Bar1 = pci::Bar<BAR1_SIZE>;
 
@@ -88,6 +88,8 @@ impl pci::Driver for NovaCore {
             )?;
             Ok(try_pin_init!(Self {
                 gpu <- Gpu::new(pdev, bar.clone(), bar.access(pdev.as_ref())?),
+                // Run optional GPU selftests.
+                _: { gpu.run_selftests(pdev)? },
                 _reg <- auxiliary::Registration::new(
                     pdev.as_ref(),
                     c"nova-drm",

@@ -23,6 +23,8 @@ use crate::mm::{
     VramAddress, //
 };
 use kernel::prelude::*;
+#[cfg(CONFIG_NOVA_MM_SELFTESTS)]
+use kernel::device;
 
 /// Extracts the page table index at a given level from a virtual address.
 pub(super) trait VaLevelIndex {
@@ -382,5 +384,35 @@ impl From<Bounded<u64, 2>> for AperturePde {
 impl From<AperturePde> for Bounded<u64, 2> {
     fn from(val: AperturePde) -> Self {
         Bounded::from_expr(val as u64 & 0x3)
+    }
+}
+
+/// Check if the PDB has valid, VRAM-backed page tables.
+#[cfg(CONFIG_NOVA_MM_SELFTESTS)]
+fn check_pdb_inner<M: MmuConfig>(
+    dev: &device::Device<device::Bound>,
+    pramin: &pramin::Pramin,
+    pdb_addr: VramAddress,
+) -> Result {
+    let mut window = pramin.get_window(dev)?;
+    let raw = window.try_read64(pdb_addr.raw())?;
+
+    if !M::Pde::new(raw).is_valid_vram() {
+        return Err(ENOENT);
+    }
+    Ok(())
+}
+
+/// Check if the PDB has valid, VRAM-backed page tables, dispatching by MMU version.
+#[cfg(CONFIG_NOVA_MM_SELFTESTS)]
+pub(super) fn check_pdb_valid(
+    dev: &device::Device<device::Bound>,
+    pramin: &pramin::Pramin,
+    pdb_addr: VramAddress,
+    chipset: crate::gpu::Chipset,
+) -> Result {
+    match MmuVersion::from(chipset.arch()) {
+        MmuVersion::V2 => check_pdb_inner::<MmuV2>(dev, pramin, pdb_addr),
+        MmuVersion::V3 => check_pdb_inner::<MmuV3>(dev, pramin, pdb_addr),
     }
 }

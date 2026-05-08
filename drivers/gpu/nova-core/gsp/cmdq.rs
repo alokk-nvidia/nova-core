@@ -816,7 +816,6 @@ impl Cmdq {
     ///
     /// Convenience wrapper around [`send_gmc_and_receive`](Self::send_gmc_and_receive)
     /// for commands where only the success/failure status matters.
-    #[expect(dead_code)]
     pub(crate) fn send_gmc_no_response(
         &self,
         bar: &Bar0,
@@ -834,7 +833,6 @@ impl Cmdq {
     ///
     /// The GSP will process the command asynchronously and may later send a
     /// GMC event that can be consumed via [`wait_gmc_event`](Self::wait_gmc_event).
-    #[expect(dead_code)]
     pub(crate) fn send_gmc_fire_and_forget(
         &self,
         bar: &Bar0,
@@ -849,7 +847,6 @@ impl Cmdq {
     ///
     /// Drains incoming GMC messages until `predicate(command_id, payload)` returns
     /// `true` or `timeout` elapses. Non-matching messages are consumed and discarded.
-    #[expect(dead_code)]
     pub(crate) fn wait_gmc_event<F>(
         &self,
         bar: &Bar0,

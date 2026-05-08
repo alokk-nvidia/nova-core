@@ -12,7 +12,13 @@ use kernel::{
     pci,
     prelude::*,
     ptr::Alignment,
-    sync::Arc, //
+    sync::Arc,
+    time::{
+        delay::fsleep,
+        Delta,
+        Instant,
+        Monotonic, //
+    },
 };
 
 use crate::{
@@ -31,9 +37,7 @@ use crate::{
 /// VRAM allocation with RAII lifetime. Drop frees blocks back to buddy allocator.
 pub(crate) struct VramBlock {
     _blocks: Pin<KBox<AllocatedBlocks>>,
-    #[expect(dead_code)]
     pub addr: u64,
-    #[expect(dead_code)]
     pub size: u64,
 }
 
@@ -58,14 +62,13 @@ pub(crate) fn alloc_vram(mm: &GpuMm, size: u64, align: u64) -> Result<VramBlock>
 }
 
 /// BAR1 sub-mapping with RAII lifetime.
-#[expect(dead_code)]
 pub(crate) struct Bar1Map {
     bar1: Arc<Devres<Bar1>>,
     pub offset: u64,
+    #[expect(dead_code)]
     pub size: u64,
 }
 
-#[expect(dead_code)]
 impl Bar1Map {
     pub(crate) fn new(bar1: &Arc<Devres<Bar1>>, offset: u64, size: u64) -> Result<Self> {
         Ok(Self {
@@ -80,6 +83,7 @@ impl Bar1Map {
         bar.try_read32((self.offset + off) as usize)
     }
 
+    #[expect(dead_code)]
     pub(crate) fn write32(
         &self,
         dev: &device::Device<device::Bound>,
@@ -109,7 +113,6 @@ const VGPU_LOG_SIZE: u64 = 256 * 1024;
 const KERNEL_LOG_SIZE: u64 = 64 * 1024;
 
 /// Communication buffer layout within the management heap.
-#[expect(dead_code)]
 pub(crate) struct CommBuffLayout {
     pub total_size: u64,
     pub init_task_log_offset: u64,
@@ -147,7 +150,6 @@ use crate::gsp::commands::NVGMC_ENGINE_TYPE_COUNT;
 /// Indexed by `NVGMC_ENGINE_TYPE` (GR=1, COPY=2, ..., OFA=19).
 /// Each `u64` is a bitmask where bit N means engine instance N exists.
 pub(crate) struct GmcEngineMasks {
-    #[expect(dead_code)]
     pub masks: [u64; NVGMC_ENGINE_TYPE_COUNT],
 }
 
@@ -365,6 +367,41 @@ mod vgpu_prop_keys {
 pub(crate) mod gmcapi {
     pub(crate) const VGPU_MGMT_QUERY_PROPERTIES: u32 = 0x1000_0006;
     pub(crate) const VGPU_MGMT_QUERY_ASSIGNED_VF: u32 = 0x1000_0007;
+    pub(crate) const VGPU_BOOTLOAD: u32 = 0x1000_0020;
+    pub(crate) const VGPU_SHUTDOWN: u32 = 0x1000_0021;
+    pub(crate) const VGPU_SHUTDOWN_COMPLETE: u32 = 0x1000_0022;
+    pub(crate) const VGPU_CLEANUP: u32 = 0x1000_0023;
+}
+
+/// Plugin RPC channel for vGPU plugin communication.
+pub(crate) struct PluginRpc {
+    bar1_map: Bar1Map,
+}
+
+const GSP_PLUGIN_BOOTLOADED: u32 = 0x4E65_4A6F;
+const CTRL_BUF_MSG_SEQ_NUM_OFFSET: u64 = 8;
+const PLUGIN_BOOT_TIMEOUT_MS: u64 = 10_000;
+
+impl PluginRpc {
+    pub(crate) fn new(bar1_map: Bar1Map) -> Self {
+        Self { bar1_map }
+    }
+
+    /// Poll ctrl_buf for plugin boot completion magic.
+    pub(crate) fn wait_plugin_ready(&self, dev: &device::Device<device::Bound>) -> Result {
+        let start = Instant::<Monotonic>::now();
+        let timeout = Delta::from_millis(PLUGIN_BOOT_TIMEOUT_MS as i64);
+        loop {
+            let val = self.bar1_map.read32(dev, CTRL_BUF_MSG_SEQ_NUM_OFFSET)?;
+            if val == GSP_PLUGIN_BOOTLOADED {
+                return Ok(());
+            }
+            if start.elapsed() > timeout {
+                return Err(ETIMEDOUT);
+            }
+            fsleep(Delta::from_millis(1));
+        }
+    }
 }
 
 // --- VgpuInstance ---
@@ -382,6 +419,7 @@ pub(crate) struct VgpuInstance {
     pub num_plugin_channels: u32,
     pub fbmem_heap: Option<VramBlock>,
     pub mgmt_heap: Option<VramBlock>,
+    pub plugin_rpc: Option<PluginRpc>,
     pub active: bool,
 }
 
@@ -447,12 +485,16 @@ pub(crate) fn query_vgpu_type(cmdq: &Cmdq, bar: &Bar0, type_id: u32) -> Result<V
 // --- VgpuManager: create / destroy ---
 
 impl VgpuManager {
-    /// Create a new vGPU instance with allocated resources.
+    /// Create a new vGPU instance with allocated resources and bootload the plugin.
     #[expect(dead_code)]
     #[expect(clippy::too_many_arguments)]
     pub(crate) fn create_instance(
         &mut self,
+        dev: &device::Device<device::Bound>,
+        cmdq: &Cmdq,
+        bar: &Bar0,
         mm: &GpuMm,
+        bar1: &Arc<Devres<Bar1>>,
         chid_alloc: &mut ChidAllocator,
         gfid: Gfid,
         dbdf: Dbdf,
@@ -471,7 +513,10 @@ impl VgpuManager {
         let mgmt = alloc_vram(mm, vgpu_type.gsp_heap_size.max(self.comm_layout.total_size), 4096)
             .inspect_err(|_| chid_alloc.free(chid_offset, num_chid))?;
 
-        Ok(VgpuInstance {
+        let bar1_map = Bar1Map::new(bar1, mgmt.addr, self.comm_layout.total_size)?;
+        let plugin_rpc = PluginRpc::new(bar1_map);
+
+        let mut instance = VgpuInstance {
             id: self.next_id(),
             gfid,
             dbdf,
@@ -482,17 +527,22 @@ impl VgpuManager {
             num_plugin_channels: 3,
             fbmem_heap: Some(fbmem),
             mgmt_heap: Some(mgmt),
+            plugin_rpc: Some(plugin_rpc),
             active: false,
-        })
+        };
+
+        bootload(dev, cmdq, bar, &instance, &self.engine_masks, &self.comm_layout)?;
+        instance.active = true;
+
+        Ok(instance)
     }
 
-    /// Destroy a vGPU instance by GFID: free resources.
-    ///
-    /// Note: GSP shutdown/cleanup GMCAPI sequence is handled by the next
-    /// patch which adds the full teardown protocol.
+    /// Destroy a vGPU instance by GFID: send GSP shutdown sequence, then free resources.
     #[expect(dead_code)]
     pub(crate) fn destroy_instance(
         &mut self,
+        cmdq: &Cmdq,
+        bar: &Bar0,
         chid_alloc: &mut ChidAllocator,
         gfid: Gfid,
     ) -> Result {
@@ -502,9 +552,168 @@ impl VgpuManager {
             .position(|i| i.gfid == gfid)
             .ok_or(ENOENT)?;
 
+        let gfid_val = self.instances[idx].gfid.0;
+        let mut payload = KVec::<u8>::new();
+        payload.extend_from_slice(&gfid_val.to_le_bytes(), GFP_KERNEL)?;
+
+        cmdq.send_gmc_fire_and_forget(bar, gmcapi::VGPU_SHUTDOWN, payload.as_slice())?;
+
+        cmdq.wait_gmc_event(bar, Delta::from_secs(10), |cmd_id, _data| {
+            cmd_id == gmcapi::VGPU_SHUTDOWN_COMPLETE
+        })?;
+
+        cmdq.send_gmc_no_response(bar, gmcapi::VGPU_CLEANUP, payload.as_slice())?;
+
         let instance = self.instances.remove(idx).map_err(|_| EINVAL)?;
         chid_alloc.free(instance.chid_offset, instance.num_chid);
 
         Ok(())
     }
+}
+
+mod bootload_keys {
+    pub(super) const DBDF: u16 = 0x0001;
+    pub(super) const GFID: u16 = 0x0002;
+    pub(super) const VGPU_TYPE: u16 = 0x0003;
+    pub(super) const VM_PID: u16 = 0x0004;
+    #[expect(dead_code)]
+    pub(super) const SWIZZ_ID: u16 = 0x0005;
+    pub(super) const NUM_CHANNELS: u16 = 0x0006;
+    pub(super) const NUM_PLUGIN_CHANNELS: u16 = 0x0007;
+    pub(super) const GUEST_FB_SEGMENT_COUNT: u16 = 0x0008;
+
+    pub(super) const CHANNEL_MAPPING: u16 = 0x1001;
+    pub(super) const GUEST_FB_SEGMENT_PHYS_ADDR: u16 = 0x1002;
+    pub(super) const GUEST_FB_SEGMENT_LENGTH: u16 = 0x1003;
+    pub(super) const PLUGIN_HEAP_PHYS_ADDR: u16 = 0x1004;
+    pub(super) const PLUGIN_HEAP_LENGTH: u16 = 0x1005;
+    pub(super) const CTRL_BUFF_OFFSET: u16 = 0x1006;
+    pub(super) const INIT_TASK_LOG_OFFSET: u16 = 0x1007;
+    pub(super) const INIT_TASK_LOG_SIZE: u16 = 0x1008;
+    pub(super) const VGPU_TASK_LOG_OFFSET: u16 = 0x1009;
+    pub(super) const VGPU_TASK_LOG_SIZE: u16 = 0x100A;
+    pub(super) const KERNEL_LOG_OFFSET: u16 = 0x100B;
+    pub(super) const KERNEL_LOG_SIZE: u16 = 0x100C;
+}
+
+/// Build a 32-bit GMC engine ID from type and instance index.
+///
+/// Format: `type[15:0] | index[31:16]` per `gmcapi_engine_types.h`.
+fn gmc_engine_id(engine_type: usize, index: usize) -> u64 {
+    (engine_type as u64) | ((index as u64) << 16)
+}
+
+/// Send GMCAPI VGPU_BOOTLOAD with NVKV-encoded parameters, then wait for
+/// the plugin to signal readiness via the ctrl_buf magic value.
+pub(crate) fn bootload(
+    dev: &device::Device<device::Bound>,
+    cmdq: &Cmdq,
+    bar: &Bar0,
+    instance: &VgpuInstance,
+    engine_masks: &GmcEngineMasks,
+    comm_layout: &CommBuffLayout,
+) -> Result {
+    let mut kvs: KVec<u64> = KVec::new();
+
+    nvkv::nvkv_push_imm32(&mut kvs, bootload_keys::DBDF, instance.dbdf.0)?;
+    nvkv::nvkv_push_imm32(&mut kvs, bootload_keys::GFID, instance.gfid.0)?;
+    nvkv::nvkv_push_imm32(
+        &mut kvs,
+        bootload_keys::VGPU_TYPE,
+        instance.vgpu_type.vgpu_type_id,
+    )?;
+    nvkv::nvkv_push_imm32(&mut kvs, bootload_keys::VM_PID, instance.vm_pid)?;
+    nvkv::nvkv_push_imm32(&mut kvs, bootload_keys::NUM_CHANNELS, instance.num_chid)?;
+    nvkv::nvkv_push_imm32(
+        &mut kvs,
+        bootload_keys::NUM_PLUGIN_CHANNELS,
+        instance.num_plugin_channels,
+    )?;
+
+    let mut channel_map: KVec<u64> = KVec::new();
+    for engine_type in 1..NVGMC_ENGINE_TYPE_COUNT {
+        let mask = engine_masks.masks[engine_type];
+        let mut bit = 0u32;
+        let mut remaining = mask;
+        while remaining != 0 {
+            if remaining & 1 != 0 {
+                let engine_id = gmc_engine_id(engine_type, bit as usize);
+                let entry = engine_id | ((instance.chid_offset as u64) << 32);
+                channel_map.push(entry, GFP_KERNEL)?;
+            }
+            remaining >>= 1;
+            bit += 1;
+        }
+    }
+    nvkv::nvkv_push_array64(&mut kvs, bootload_keys::CHANNEL_MAPPING, channel_map.as_slice())?;
+
+    let fb = instance.fbmem_heap.as_ref().ok_or(EINVAL)?;
+    nvkv::nvkv_push_imm32(&mut kvs, bootload_keys::GUEST_FB_SEGMENT_COUNT, 1)?;
+    nvkv::nvkv_push_seq64(
+        &mut kvs,
+        bootload_keys::GUEST_FB_SEGMENT_PHYS_ADDR,
+        &[fb.addr],
+    )?;
+    nvkv::nvkv_push_seq64(
+        &mut kvs,
+        bootload_keys::GUEST_FB_SEGMENT_LENGTH,
+        &[fb.size],
+    )?;
+
+    let mgmt = instance.mgmt_heap.as_ref().ok_or(EINVAL)?;
+    nvkv::nvkv_push_seq64(
+        &mut kvs,
+        bootload_keys::PLUGIN_HEAP_PHYS_ADDR,
+        &[mgmt.addr],
+    )?;
+    nvkv::nvkv_push_seq64(
+        &mut kvs,
+        bootload_keys::PLUGIN_HEAP_LENGTH,
+        &[mgmt.size],
+    )?;
+
+    nvkv::nvkv_push_seq64(&mut kvs, bootload_keys::CTRL_BUFF_OFFSET, &[0u64])?;
+    nvkv::nvkv_push_seq64(
+        &mut kvs,
+        bootload_keys::INIT_TASK_LOG_OFFSET,
+        &[mgmt.addr + comm_layout.init_task_log_offset],
+    )?;
+    nvkv::nvkv_push_seq64(
+        &mut kvs,
+        bootload_keys::INIT_TASK_LOG_SIZE,
+        &[comm_layout.init_task_log_size],
+    )?;
+    let vgpu_log_offset =
+        mgmt.addr + comm_layout.init_task_log_offset + comm_layout.init_task_log_size;
+    nvkv::nvkv_push_seq64(
+        &mut kvs,
+        bootload_keys::VGPU_TASK_LOG_OFFSET,
+        &[vgpu_log_offset],
+    )?;
+    nvkv::nvkv_push_seq64(
+        &mut kvs,
+        bootload_keys::VGPU_TASK_LOG_SIZE,
+        &[comm_layout.vgpu_task_log_size],
+    )?;
+    let kernel_log_offset = vgpu_log_offset + comm_layout.vgpu_task_log_size;
+    nvkv::nvkv_push_seq64(
+        &mut kvs,
+        bootload_keys::KERNEL_LOG_OFFSET,
+        &[kernel_log_offset],
+    )?;
+    nvkv::nvkv_push_seq64(
+        &mut kvs,
+        bootload_keys::KERNEL_LOG_SIZE,
+        &[comm_layout.kernel_log_size],
+    )?;
+
+    // SAFETY: `kvs` is a valid `KVec<u64>` and we reinterpret it as a byte
+    // slice of the same total size. The pointer is valid for `len * 8` bytes.
+    let payload: &[u8] = unsafe {
+        core::slice::from_raw_parts(kvs.as_ptr().cast::<u8>(), kvs.len() * 8)
+    };
+    cmdq.send_gmc_fire_and_forget(bar, gmcapi::VGPU_BOOTLOAD, payload)?;
+
+    let rpc = instance.plugin_rpc.as_ref().ok_or(EINVAL)?;
+    rpc.wait_plugin_ready(dev)
 }

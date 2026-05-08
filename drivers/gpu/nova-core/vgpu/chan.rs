@@ -9,7 +9,6 @@ pub(crate) struct ChidAllocator {
     total: u32,
 }
 
-#[expect(dead_code)]
 impl ChidAllocator {
     pub(crate) fn new(total: u32) -> Self {
         Self {

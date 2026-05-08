@@ -377,3 +377,101 @@ pub(crate) fn find_seq32_indexed(
 
     Ok(None)
 }
+
+// --- Callback-based NVKV decoder ---
+
+/// Decoded value from a single NVKV entry.
+pub(crate) enum NvkvValue<'a> {
+    Imm32(u32),
+    Seq32(&'a [u8]),
+    Seq64(&'a [u8]),
+    Array8(&'a [u8]),
+}
+
+/// Iterate over all key-value pairs in an NVKV payload, calling `f` for each.
+pub(crate) fn nvkv_decode<F>(payload: &[u8], mut f: F) -> Result
+where
+    F: FnMut(u16, u16, NvkvValue<'_>),
+{
+    if payload.len() % 8 != 0 {
+        return Err(EINVAL);
+    }
+
+    let qwords = payload.len() / 8;
+    let mut pos = 0usize;
+
+    while pos < qwords {
+        let hdr = u64::from_le_bytes(
+            payload[pos * 8..(pos + 1) * 8]
+                .try_into()
+                .map_err(|_| EINVAL)?,
+        );
+        pos += 1;
+
+        let opcode = header_opcode(hdr);
+        let key = header_key(hdr);
+        let index = header_index(hdr);
+        let count = header_count(hdr);
+        let n_data = data_u64s(opcode, count)?;
+
+        if pos + n_data > qwords {
+            return Err(EINVAL);
+        }
+
+        let data_bytes = &payload[pos * 8..(pos + n_data) * 8];
+
+        match opcode {
+            OPCODE_IMM32 => f(key, index, NvkvValue::Imm32(count)),
+            OPCODE_SEQ32 => f(key, index, NvkvValue::Seq32(data_bytes)),
+            OPCODE_SEQ64 => f(key, index, NvkvValue::Seq64(data_bytes)),
+            OPCODE_ARRAY8 => {
+                let byte_count = count as usize;
+                let byte_offset = pos * 8;
+                if byte_offset + byte_count > payload.len() {
+                    return Err(EINVAL);
+                }
+                f(
+                    key,
+                    index,
+                    NvkvValue::Array8(&payload[byte_offset..byte_offset + byte_count]),
+                );
+            }
+            OPCODE_ARRAY64 => f(key, index, NvkvValue::Seq64(data_bytes)),
+            _ => {}
+        }
+
+        pos += n_data;
+    }
+
+    Ok(())
+}
+
+/// Read a u32 from an NvkvValue.
+pub(crate) fn nvkv_read_u32(val: &NvkvValue<'_>) -> u32 {
+    match val {
+        NvkvValue::Imm32(v) => *v,
+        NvkvValue::Seq32(data) if data.len() >= 4 => {
+            u32::from_le_bytes(data[..4].try_into().unwrap_or([0; 4]))
+        }
+        _ => 0,
+    }
+}
+
+/// Read a u64 from an NvkvValue.
+pub(crate) fn nvkv_read_u64(val: &NvkvValue<'_>) -> u64 {
+    match val {
+        NvkvValue::Seq64(data) if data.len() >= 8 => {
+            u64::from_le_bytes(data[..8].try_into().unwrap_or([0; 8]))
+        }
+        NvkvValue::Imm32(v) => u64::from(*v),
+        _ => 0,
+    }
+}
+
+/// Copy a string from an NvkvValue::Array8 into a fixed buffer.
+pub(crate) fn nvkv_read_string8(val: &NvkvValue<'_>, dst: &mut [u8]) {
+    if let NvkvValue::Array8(data) = val {
+        let len = data.len().min(dst.len());
+        dst[..len].copy_from_slice(&data[..len]);
+    }
+}

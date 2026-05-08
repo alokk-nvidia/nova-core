@@ -29,14 +29,12 @@ use crate::{
 };
 
 /// VRAM allocation with RAII lifetime. Drop frees blocks back to buddy allocator.
-#[expect(dead_code)]
 pub(crate) struct VramBlock {
     _blocks: Pin<KBox<AllocatedBlocks>>,
     pub addr: u64,
     pub size: u64,
 }
 
-#[expect(dead_code)]
 pub(crate) fn alloc_vram(mm: &GpuMm, size: u64, align: u64) -> Result<VramBlock> {
     let min_block_size =
         Alignment::new_checked(core::cmp::max(align, 4096) as usize).ok_or(EINVAL)?;

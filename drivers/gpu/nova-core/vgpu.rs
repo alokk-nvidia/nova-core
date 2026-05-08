@@ -1,9 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0
 
 mod chan;
+pub(crate) mod consts;
+mod instance;
 mod mm;
 
 pub(crate) use self::chan::ChidAllocator;
+pub(crate) use self::mm::{
+    alloc_vram,
+    VramBlock, //
+};
+
+use self::instance::VgpuInstance;
 
 use kernel::{
     device,
@@ -49,6 +57,7 @@ pub(crate) struct VgpuManager {
     pub(crate) total_avail_chids: u32,
     pub(crate) total_fbmem_size: u64,
     pub(crate) engine_masks: GmcEngineMasks,
+    pub(crate) instances: KVec<VgpuInstance>,
 }
 
 impl VgpuManager {
@@ -70,11 +79,16 @@ impl VgpuManager {
             total_avail_chids: 0,
             total_fbmem_size: 0,
             engine_masks: GmcEngineMasks::new(),
+            instances: KVec::new(),
         })
     }
 
     pub(crate) fn set_vgpu_enabled(&mut self, enabled: bool) {
         self.vgpu_enabled = enabled;
+    }
+
+    fn next_id(&mut self) -> i32 {
+        self.instances.len() as i32
     }
 
     /// One-time initialization after GSP boot completes.

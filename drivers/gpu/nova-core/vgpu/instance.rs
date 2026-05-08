@@ -1,20 +1,40 @@
 // SPDX-License-Identifier: GPL-2.0
 
-use kernel::prelude::*;
+use kernel::{
+    device,
+    devres::Devres,
+    prelude::*,
+    sync::{
+        Arc,
+        Mutex, //
+    },
+};
 
 use crate::{
-    driver::Bar0,
+    driver::{
+        Bar0,
+        Bar1, //
+    },
     gsp::{
         cmdq::Cmdq,
         nvkv, //
     },
-    mm::GpuMm,
+    mm::{
+        bar_user::BarUser,
+        GpuMm, //
+    },
     vgpu::{
         alloc_vram,
+        bootload::{
+            bootload,
+            shutdown, //
+        },
         consts::{
             gmcapi,
             vgpu_prop_keys, //
         },
+        plugin_rpc::PluginRpc,
+        Bar1Map,
         ChidAllocator,
         VgpuManager,
         VramBlock, //
@@ -87,6 +107,7 @@ pub(crate) struct VgpuInstance {
     pub num_plugin_channels: u32,
     pub fbmem_heap: Option<VramBlock>,
     pub mgmt_heap: Option<VramBlock>,
+    pub plugin_rpc: Option<PluginRpc>,
     pub active: bool,
 }
 
@@ -149,9 +170,13 @@ impl VgpuManager {
     /// manager lock) to bootload the GSP plugin and negotiate the RPC
     /// channel.
     #[expect(dead_code)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn allocate_instance(
         &mut self,
+        dev: &device::Device<device::Bound>,
         mm: &GpuMm,
+        bar_user: &Arc<Mutex<BarUser>>,
+        bar1: &Arc<Devres<Bar1>>,
         chid_alloc: &mut ChidAllocator,
         gfid: Gfid,
         dbdf: Dbdf,
@@ -198,6 +223,9 @@ impl VgpuManager {
             mgmt.size
         );
 
+        let bar1_map = Bar1Map::new(bar_user, bar1, dev, mm, mgmt.addr, mgmt.size)?;
+        let plugin_rpc = PluginRpc::new(bar1_map);
+
         Ok(VgpuInstance {
             id: self.next_id(),
             gfid,
@@ -209,17 +237,17 @@ impl VgpuManager {
             num_plugin_channels: 3,
             fbmem_heap: Some(fbmem),
             mgmt_heap: Some(mgmt),
+            plugin_rpc: Some(plugin_rpc),
             active: false,
         })
     }
 
-    /// Destroy a vGPU instance by GFID: free resources.
-    ///
-    /// Note: GSP shutdown/cleanup GMCAPI sequence is handled by the next
-    /// patch which adds the full teardown protocol.
+    /// Destroy a vGPU instance by GFID: send GSP shutdown sequence, then free resources.
     #[expect(dead_code)]
     pub(crate) fn destroy_instance(
         &mut self,
+        cmdq: &Cmdq,
+        bar: &Bar0,
         chid_alloc: &mut ChidAllocator,
         gfid: Gfid,
     ) -> Result {
@@ -231,6 +259,8 @@ impl VgpuManager {
             .position(|i| i.gfid == gfid)
             .ok_or(ENOENT)?;
 
+        shutdown(cmdq, bar, self.instances[idx].gfid)?;
+
         let instance = self.instances.remove(idx).map_err(|_| EINVAL)?;
         chid_alloc.free(instance.chid_offset, instance.num_chid);
 
@@ -238,4 +268,19 @@ impl VgpuManager {
 
         Ok(())
     }
+}
+
+/// Bootload the GSP plugin for an allocated instance.
+/// Called **without** holding the `VgpuManager` or `ChidAllocator` locks.
+#[expect(dead_code)]
+pub(crate) fn activate_instance(
+    dev: &device::Device<device::Bound>,
+    cmdq: &Cmdq,
+    bar: &Bar0,
+    instance: &mut VgpuInstance,
+    engine_masks: &super::GmcEngineMasks,
+) -> Result {
+    bootload(dev, cmdq, bar, instance, engine_masks)?;
+    instance.active = true;
+    Ok(())
 }

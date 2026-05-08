@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0
 
+pub(crate) mod bootload;
 mod chan;
 pub(crate) mod consts;
 mod instance;
 mod mm;
+pub(crate) mod plugin_rpc;
 
 pub(crate) use self::chan::ChidAllocator;
+pub(crate) use self::instance::Gfid;
 pub(crate) use self::mm::{
     alloc_vram,
+    Bar1Map,
     VramBlock, //
 };
 
@@ -28,7 +32,6 @@ use crate::gsp::commands::NVGMC_ENGINE_TYPE_COUNT;
 /// Indexed by `NVGMC_ENGINE_TYPE` (GR=1, COPY=2, ..., OFA=19).
 /// Each `u64` is a bitmask where bit N means engine instance N exists.
 pub(crate) struct GmcEngineMasks {
-    #[expect(dead_code)]
     pub masks: [u64; NVGMC_ENGINE_TYPE_COUNT],
 }
 

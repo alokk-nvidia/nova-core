@@ -316,6 +316,18 @@ pub(crate) fn find_seq64_indexed(
             }
         }
 
+        if opcode == OPCODE_ARRAY64 && key == target_key && target_index >= index {
+            let offset = (target_index - index) as usize;
+            if offset < n_data {
+                let val = u64::from_le_bytes(
+                    payload[(pos + offset) * 8..(pos + offset + 1) * 8]
+                        .try_into()
+                        .map_err(|_| EINVAL)?,
+                );
+                return Ok(Some(val));
+            }
+        }
+
         pos += n_data;
     }
 
@@ -474,4 +486,51 @@ pub(crate) fn nvkv_read_string8(val: &NvkvValue<'_>, dst: &mut [u8]) {
         let len = data.len().min(dst.len());
         dst[..len].copy_from_slice(&data[..len]);
     }
+}
+
+// --- NVKV Encoding ---
+
+/// Encode an IMM32 key-value pair and push to the kvs vector.
+pub(crate) fn nvkv_push_imm32(kvs: &mut KVec<u64>, key: u16, value: u32) -> Result {
+    let header = make_header(OPCODE_IMM32, key, value);
+    kvs.push(header, GFP_KERNEL)?;
+    Ok(())
+}
+
+/// Encode a SEQ32 key-value pair: header + ceil(N/2) data u64s.
+///
+/// `first_key` is the starting key; the Nth value maps to `first_key + N`.
+pub(crate) fn nvkv_push_seq32(kvs: &mut KVec<u64>, first_key: u16, values: &[u32]) -> Result {
+    let header = make_header(OPCODE_SEQ32, first_key, values.len() as u32);
+    kvs.push(header, GFP_KERNEL)?;
+    for pair in values.chunks(2) {
+        let lo = u64::from(pair[0]);
+        let hi = if pair.len() > 1 {
+            u64::from(pair[1])
+        } else {
+            0
+        };
+        kvs.push(lo | (hi << 32), GFP_KERNEL)?;
+    }
+    Ok(())
+}
+
+/// Encode a SEQ64 key-value pair: header + N data u64s.
+pub(crate) fn nvkv_push_seq64(kvs: &mut KVec<u64>, key: u16, values: &[u64]) -> Result {
+    let header = make_header(OPCODE_SEQ64, key, values.len() as u32);
+    kvs.push(header, GFP_KERNEL)?;
+    for &v in values {
+        kvs.push(v, GFP_KERNEL)?;
+    }
+    Ok(())
+}
+
+/// Encode an ARRAY64 key-value pair: header + N data u64s.
+pub(crate) fn nvkv_push_array64(kvs: &mut KVec<u64>, key: u16, values: &[u64]) -> Result {
+    let header = make_header(OPCODE_ARRAY64, key, values.len() as u32);
+    kvs.push(header, GFP_KERNEL)?;
+    for &v in values {
+        kvs.push(v, GFP_KERNEL)?;
+    }
+    Ok(())
 }

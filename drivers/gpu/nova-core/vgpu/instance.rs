@@ -246,6 +246,8 @@ impl VgpuManager {
     #[expect(dead_code)]
     pub(crate) fn destroy_instance(
         &mut self,
+        dev: &device::Device<device::Bound>,
+        mm: &crate::mm::GpuMm,
         cmdq: &Cmdq,
         bar: &Bar0,
         chid_alloc: &mut ChidAllocator,
@@ -261,8 +263,14 @@ impl VgpuManager {
 
         shutdown(cmdq, bar, self.instances[idx].gfid)?;
 
-        let instance = self.instances.remove(idx).map_err(|_| EINVAL)?;
+        let mut instance = self.instances.remove(idx).map_err(|_| EINVAL)?;
         chid_alloc.free(instance.chid_offset, instance.num_chid);
+
+        if let Some(rpc) = instance.plugin_rpc.take() {
+            if let Err(e) = rpc.destroy(dev, mm) {
+                pr_debug!("destroy_instance: gfid={} rpc.destroy failed: {:?}\n", gfid.0, e);
+            }
+        }
 
         pr_debug!("destroy_instance: gfid={} done\n", gfid.0);
 
@@ -270,8 +278,9 @@ impl VgpuManager {
     }
 }
 
-/// Bootload the GSP plugin for an allocated instance.
-/// Called **without** holding the `VgpuManager` or `ChidAllocator` locks.
+/// Bootload the GSP plugin and negotiate the RPC channel for an allocated
+/// instance.  Called **without** holding the `VgpuManager` or `ChidAllocator`
+/// locks.
 #[expect(dead_code)]
 pub(crate) fn activate_instance(
     dev: &device::Device<device::Bound>,
@@ -280,7 +289,18 @@ pub(crate) fn activate_instance(
     instance: &mut VgpuInstance,
     engine_masks: &super::GmcEngineMasks,
 ) -> Result {
+    let mut rpc = instance.plugin_rpc.take().ok_or(EINVAL)?;
+    rpc.init_rpc(dev)?;
+    instance.plugin_rpc = Some(rpc);
+
     bootload(dev, cmdq, bar, instance, engine_masks)?;
+
+    let mut rpc = instance.plugin_rpc.take().ok_or(EINVAL)?;
+    rpc.negotiate_rpc_version(dev, bar, instance.gfid)?;
+    rpc.send_config_params(dev, bar, instance)?;
+    rpc.set_bme(dev, bar, instance.gfid, true)?;
+    instance.plugin_rpc = Some(rpc);
+
     instance.active = true;
     Ok(())
 }

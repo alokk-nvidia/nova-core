@@ -76,7 +76,6 @@ pub(crate) struct Bar1Map {
     pub gpu_va_size: u64,
 }
 
-#[expect(dead_code)]
 impl Bar1Map {
     pub(crate) fn new(
         bar_user: &Arc<Mutex<BarUser>>,

@@ -64,11 +64,16 @@ pub(crate) mod plugin_rpc {
     pub(crate) const CTRL_BUF_MSG_SEQ_NUM_OFFSET: u64 = 8;
     pub(crate) const PLUGIN_BOOT_TIMEOUT_MS: u64 = 10_000;
 
-    const CTRL_SIZE: u64 = 4 * 1024;
-    const RESPONSE_SIZE: u64 = 4 * 1024;
-    const MESSAGE_SIZE: u64 = 4 * 1024;
-    const MIGRATION_SIZE: u64 = 2 * 1024 * 1024;
-    const ERROR_SIZE: u64 = 4 * 1024;
+    pub(crate) const CTRL_SIZE: u64 = 4 * 1024;
+    pub(crate) const RESPONSE_SIZE: u64 = 4 * 1024;
+    pub(crate) const MESSAGE_SIZE: u64 = 4 * 1024;
+    pub(crate) const MIGRATION_SIZE: u64 = 2 * 1024 * 1024;
+    pub(crate) const ERROR_SIZE: u64 = 4 * 1024;
+    pub(crate) const GUEST_RPC_TRACE_SIZE: u64 = 64 * 1024;
+
+    pub(crate) const MIGRATION_BUFF_OFFSET: u64 = CTRL_SIZE + RESPONSE_SIZE + MESSAGE_SIZE;
+    pub(crate) const ERROR_BUFF_OFFSET: u64 = MIGRATION_BUFF_OFFSET + MIGRATION_SIZE;
+    pub(crate) const GUEST_RPC_TRACE_BUFF_OFFSET: u64 = ERROR_BUFF_OFFSET + ERROR_SIZE;
 
     pub(crate) const INIT_LOG_SIZE: u64 = 128 * 1024;
     pub(crate) const VGPU_LOG_SIZE: u64 = 256 * 1024;
@@ -78,4 +83,48 @@ pub(crate) mod plugin_rpc {
         CTRL_SIZE + RESPONSE_SIZE + MESSAGE_SIZE + MIGRATION_SIZE + ERROR_SIZE;
     pub(crate) const VGPU_TASK_LOG_OFFSET: u64 = INIT_TASK_LOG_OFFSET + INIT_LOG_SIZE;
     pub(crate) const KERNEL_LOG_OFFSET: u64 = VGPU_TASK_LOG_OFFSET + VGPU_LOG_SIZE;
+
+    pub(crate) const CTRL_BUFF_VERSION: u32 = 2;
+    pub(crate) const NV_VIRTUAL_FUNCTION_PRIV_DOORBELL: usize = 0xb8_0000 + 0x2200;
+
+    pub(crate) const FEATURE_FLAG_ENABLE_UVM: u64 = 1 << 3;
+    pub(crate) const FEATURE_FLAG_VMM_MIGRATION: u64 = 1 << 5;
+
+    #[repr(u32)]
+    #[derive(Clone, Copy)]
+    pub(crate) enum RpcMsg {
+        VersionNegotiation = 1,
+        SetupConfigParamsAndInit = 2,
+        Reset = 3,
+        UpdateBmeState = 13,
+    }
+}
+
+/// NVKV key constants for plugin config params encoding.
+pub(crate) mod config_keys {
+    pub(crate) const UUID: u16 = 0x001;
+    pub(crate) const DBDF: u16 = 0x002;
+    pub(crate) const DEV_INST: u16 = 0x004;
+    pub(crate) const VGPU_TYPE: u16 = 0x005;
+    pub(crate) const VM_PID: u16 = 0x006;
+    pub(crate) const SWIZZ_ID: u16 = 0x010;
+    pub(crate) const NUM_CHANNELS: u16 = 0x011;
+    pub(crate) const NUM_PLUGIN_CHANNELS: u16 = 0x012;
+    pub(crate) const VMM_CAP: u16 = 0x020;
+    pub(crate) const MIGRATION_FEATURE: u16 = 0x021;
+    pub(crate) const HYPERVISOR_TYPE: u16 = 0x022;
+    pub(crate) const CPU_ARCH: u16 = 0x023;
+    pub(crate) const PAGE_SIZE: u16 = 0x024;
+    pub(crate) const FEATURE_FLAGS: u16 = 0x030;
+
+    pub(crate) const HYPERVISOR_UNKNOWN: u32 = 4;
+    pub(crate) const MIGRATION_FEATURE_KVM: u32 = 0x4000;
+    pub(crate) const CPU_ARCH_X86_64: u32 = 2;
+    pub(crate) const PAGE_SIZE_4K: u64 = 4096;
+    pub(crate) const SWIZZ_ID_NONE: u32 = 0xFFFF_FFFF;
+}
+
+/// NVKV key constants for plugin set bme encoding.
+pub(crate) mod set_bme_keys {
+    pub(crate) const BME_ENABLE: u16 = 0x100;
 }

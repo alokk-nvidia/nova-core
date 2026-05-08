@@ -428,6 +428,15 @@ impl Gpu {
                     let info = gsp.boot(&mut ctx)?;
                     mgr.set_vgpu_enabled(ctx.vgpu_requested);
 
+                    if ctx.vgpu_requested {
+                        mgr.init_post_gsp_boot(
+                            &info.gmc_engine_masks,
+                            info.total_fb_end,
+                            info.vmmu_segment_size,
+                        )?;
+                        *chid_allocator.lock() = ChidAllocator::new(2048);
+                    }
+
                     dev_info!(
                         pdev.as_ref(),
                         "Total physical VRAM: {} MiB\n",

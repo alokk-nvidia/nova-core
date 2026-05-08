@@ -75,6 +75,11 @@ pub(crate) mod gsp_config_key {
     pub(crate) const FB_REGION_TAG_NONE: u32 = 0;
     /// BAR1 page directory entry base address (`SEQ64`).
     pub(crate) const BAR1_PDE_BASE: u16 = 0x1020;
+    /// VMMU segment size (`SEQ64`, single value at index 0).
+    pub(crate) const VMMU_SEGMENT_SIZE: u16 = 0x1050;
+    /// Per-engine-type bitmask of available instances (`SEQ64`, indexed by
+    /// `NVGMC_ENGINE_TYPE`). Each u64 is a bitmask where bit N = instance N.
+    pub(crate) const ENGINE_MASK: u16 = 0x1100;
 }
 
 /// System-info key constants for `GMCAPI_CMD_GSP_INIT`.

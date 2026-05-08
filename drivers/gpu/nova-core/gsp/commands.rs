@@ -131,6 +131,11 @@ pub(crate) fn build_gsp_init_payload(
     };
     nvkv.push_imm32(nvkv::sys_info_key::OOR_ARCH, oor_arch)?;
 
+    nvkv.push_seq64(
+        nvkv::sys_info_key::NV_DOMAIN_BUS_DEVICE_FUNC,
+        u64::from(pdev.dev_id()),
+    )?;
+
     if let Some(vf) = vf_info {
         use nvkv::sys_info_key::*;
         nvkv.push_imm32(VF_TOTAL_VFS, vf.0.totalVFs)?;
@@ -150,6 +155,12 @@ pub(crate) fn build_gsp_init_payload(
         name_bytes.push(0, GFP_KERNEL)?;
         nvkv.push_array8(nvkv::sys_info_key::REGKEY_NAME, &name_bytes)?;
         nvkv.push_imm32(nvkv::sys_info_key::REGKEY_VALUE_U32, *value)?;
+    }
+
+    if vf_info.is_some() {
+        let key = b"RMSetSriovMode\0";
+        nvkv.push_array8(nvkv::sys_info_key::REGKEY_NAME, key)?;
+        nvkv.push_imm32(nvkv::sys_info_key::REGKEY_VALUE_U32, 1)?;
     }
 
     Ok(nvkv.finish())

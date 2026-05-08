@@ -360,7 +360,15 @@ impl Gpu {
                     // SAFETY: We do not move the pinned `Gsp`; `addr_of!` only
                     // computes the address.
                     cmdq_cell.set(core::ptr::addr_of!(gsp.as_ref().get_ref().cmdq));
-                    gsp.boot(pdev, bar, chipset, gsp_falcon, sec2_falcon)?
+                    let info = gsp.boot(pdev, bar, chipset, gsp_falcon, sec2_falcon)?;
+
+                    dev_info!(
+                        pdev.as_ref(),
+                        "Total physical VRAM: {} MiB\n",
+                        info.total_fb_end >> 20
+                    );
+
+                    info
                 },
 
                 _fwctl_reg <- {

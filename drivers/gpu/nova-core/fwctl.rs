@@ -117,8 +117,20 @@ const RPC_HEADER_SIZE: usize = 8;
 const GSP_GMC_MAX_RESPONSE_SIZE: u32 = 16384;
 
 /// Check whether `command_id` is permitted for the given `scope`.
-fn is_command_permitted(_scope: RpcScope, _command_id: u32) -> bool {
-    // TODO: Populate with the per-scope permitted command table once vGPU
-    // commands land in gmcapi_table.h.
-    true
+fn is_command_permitted(scope: RpcScope, command_id: u32) -> bool {
+    use crate::vgpu::gmcapi;
+
+    match scope {
+        RpcScope::Configuration => matches!(
+            command_id,
+            gmcapi::VGPU_MGMT_ADD_TYPE
+                | gmcapi::VGPU_MGMT_QUERY_SUPPORTED
+                | gmcapi::VGPU_MGMT_QUERY_CREATABLE
+                | gmcapi::VGPU_MGMT_ASSIGN_TYPE
+                | gmcapi::VGPU_MGMT_DEASSIGN_TYPE
+                | gmcapi::VGPU_MGMT_QUERY_PROPERTIES
+                | gmcapi::VGPU_MGMT_QUERY_ASSIGNED_VF
+        ),
+        _ => false,
+    }
 }

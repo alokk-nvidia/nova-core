@@ -187,23 +187,46 @@ struct NvdmPayloadCot {
     gsp_boot_args_sysmem_offset: u64,
 }
 
-/// Complete FSP message structure with MCTP and NVDM headers.
+/// Common MCTP and NVDM headers shared by all FSP messages.
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
-struct FspMessage {
+struct FspMessageHeader {
     mctp_header: u32,
     nvdm_header: u32,
+}
+
+// SAFETY: FspMessageHeader is a packed C struct with only integral fields.
+unsafe impl AsBytes for FspMessageHeader {}
+
+// SAFETY: FspMessageHeader is a packed C struct with only integral fields.
+unsafe impl FromBytes for FspMessageHeader {}
+
+impl FspMessageHeader {
+    /// Construct a standard FSP message header for the given NVDM type.
+    fn new(nvdm_type: u8) -> Self {
+        Self {
+            mctp_header: mctp::TransportHeader::new(true, true).into(),
+            nvdm_header: mctp::NvdmHeader::new(nvdm_type).into(),
+        }
+    }
+}
+
+/// Complete FSP COT (Chain of Trust) message structure.
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+struct FspCotMessage {
+    header: FspMessageHeader,
     cot: NvdmPayloadCot,
 }
 
-// SAFETY: FspMessage is a packed C struct with only integral fields.
-unsafe impl AsBytes for FspMessage {}
+// SAFETY: FspCotMessage is a packed C struct with only integral fields.
+unsafe impl AsBytes for FspCotMessage {}
+
 /// Complete FSP response structure with MCTP and NVDM headers.
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 struct FspResponse {
-    mctp_header: u32,
-    nvdm_header: u32,
+    header: FspMessageHeader,
     response: NvdmPayloadCommandResponse,
 }
 
@@ -219,7 +242,7 @@ pub(crate) trait MessageToFsp: AsBytes {
     const NVDM_TYPE: u8;
 }
 
-impl MessageToFsp for FspMessage {
+impl MessageToFsp for FspCotMessage {
     const NVDM_TYPE: u8 = mctp::nvdm_type::COT;
 }
 
@@ -403,10 +426,8 @@ impl Fsp {
         let frts_size: u32 = if !args.resume { SZ_1M as u32 } else { 0 };
 
         let msg = KBox::new(
-            FspMessage {
-                mctp_header: mctp::TransportHeader::new(true, true).into(),
-                nvdm_header: mctp::NvdmHeader::new(mctp::nvdm_type::COT).into(),
-
+            FspCotMessage {
+                header: FspMessageHeader::new(mctp::nvdm_type::COT),
                 cot: NvdmPayloadCot {
                     version: args.chipset.fsp_cot_version().ok_or(ENOTSUPP)?.raw(),
                     size: u16::try_from(core::mem::size_of::<NvdmPayloadCot>())
@@ -467,8 +488,8 @@ impl Fsp {
 
         let response = FspResponse::from_bytes(&response_buf[..]).ok_or(EIO)?;
 
-        let mctp_header = response.mctp_header;
-        let nvdm_header = response.nvdm_header;
+        let mctp_header = response.header.mctp_header;
+        let nvdm_header = response.header.nvdm_header;
         let command_nvdm_type = response.response.command_nvdm_type;
         let error_code = response.response.error_code;
 

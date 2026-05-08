@@ -84,6 +84,76 @@ impl Bar1Map {
     }
 }
 
+/// GSP-level configuration for vGPU resource sizing.
+#[derive(Default)]
+pub(crate) struct GspConfig {
+    pub vmmu_segment_size: u64,
+    pub total_avail_chids: u32,
+    pub total_fbmem_size: u64,
+}
+
+const CTRL_SIZE: u64 = 4 * 1024;
+const RESPONSE_SIZE: u64 = 4 * 1024;
+const MESSAGE_SIZE: u64 = 4 * 1024;
+const MIGRATION_SIZE: u64 = 2 * 1024 * 1024;
+const ERROR_SIZE: u64 = 4 * 1024;
+const INIT_LOG_SIZE: u64 = 128 * 1024;
+const VGPU_LOG_SIZE: u64 = 256 * 1024;
+const KERNEL_LOG_SIZE: u64 = 64 * 1024;
+
+/// Communication buffer layout within the management heap.
+#[expect(dead_code)]
+pub(crate) struct CommBuffLayout {
+    pub total_size: u64,
+    pub init_task_log_offset: u64,
+    pub init_task_log_size: u64,
+    pub vgpu_task_log_size: u64,
+    pub kernel_log_size: u64,
+}
+
+impl CommBuffLayout {
+    pub(crate) fn calculate() -> Self {
+        let init_task_log_offset =
+            CTRL_SIZE + RESPONSE_SIZE + MESSAGE_SIZE + MIGRATION_SIZE + ERROR_SIZE;
+        let total_size =
+            init_task_log_offset + INIT_LOG_SIZE + VGPU_LOG_SIZE + KERNEL_LOG_SIZE;
+        Self {
+            total_size,
+            init_task_log_offset,
+            init_task_log_size: INIT_LOG_SIZE,
+            vgpu_task_log_size: VGPU_LOG_SIZE,
+            kernel_log_size: KERNEL_LOG_SIZE,
+        }
+    }
+}
+
+impl Default for CommBuffLayout {
+    fn default() -> Self {
+        Self::calculate()
+    }
+}
+
+use crate::gsp::commands::NVGMC_ENGINE_TYPE_COUNT;
+
+/// Per-GMC-engine-type bitmask of available engine instances.
+///
+/// Indexed by `NVGMC_ENGINE_TYPE` (GR=1, COPY=2, ..., OFA=19).
+/// Each `u64` is a bitmask where bit N means engine instance N exists.
+pub(crate) struct GmcEngineMasks {
+    #[expect(dead_code)]
+    pub masks: [u64; NVGMC_ENGINE_TYPE_COUNT],
+}
+
+impl GmcEngineMasks {
+    pub(crate) fn new() -> Self {
+        Self { masks: [0; NVGMC_ENGINE_TYPE_COUNT] }
+    }
+
+    pub(crate) fn from_masks(masks: &[u64; NVGMC_ENGINE_TYPE_COUNT]) -> Self {
+        Self { masks: *masks }
+    }
+}
+
 /// Unified vGPU manager.
 ///
 /// On creation, performs platform detection to determine whether vGPU is
@@ -93,6 +163,9 @@ pub(crate) struct VgpuManager {
     pub(crate) vgpu_requested: bool,
     pub(crate) vgpu_enabled: bool,
     pub(crate) total_vfs: u16,
+    pub(crate) gsp_config: GspConfig,
+    pub(crate) comm_layout: CommBuffLayout,
+    pub(crate) engine_masks: GmcEngineMasks,
 }
 
 impl VgpuManager {
@@ -113,11 +186,29 @@ impl VgpuManager {
             vgpu_requested: total_vfs > 0,
             vgpu_enabled: false,
             total_vfs,
+            gsp_config: GspConfig::default(),
+            comm_layout: CommBuffLayout::default(),
+            engine_masks: GmcEngineMasks::new(),
         })
     }
 
     pub(crate) fn set_vgpu_enabled(&mut self, enabled: bool) {
         self.vgpu_enabled = enabled;
+    }
+
+    /// One-time initialization after GSP boot completes.
+    pub(crate) fn init_post_gsp_boot(
+        &mut self,
+        gmc_engine_masks: &[u64; NVGMC_ENGINE_TYPE_COUNT],
+        total_vram: u64,
+        vmmu_segment_size: u64,
+    ) -> Result {
+        self.gsp_config.vmmu_segment_size = vmmu_segment_size;
+        self.gsp_config.total_fbmem_size = total_vram;
+        self.gsp_config.total_avail_chids = 2048;
+        self.engine_masks = GmcEngineMasks::from_masks(gmc_engine_masks);
+        self.comm_layout = CommBuffLayout::calculate();
+        Ok(())
     }
 }
 

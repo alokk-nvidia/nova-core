@@ -250,7 +250,7 @@ impl DmaGspMem {
         let start = gsp_mem.dma_handle();
         // Write values one by one to avoid an on-stack instance of `PteArray`.
         for i in 0..GspMem::PTE_ARRAY_SIZE {
-            dma_write!(gsp_mem, .ptes.0[i], PteArray::<0>::entry(start, i)?);
+            dma_write!(gsp_mem, .ptes.0[build: i], PteArray::<0>::entry(start, i)?);
         }
 
         dma_write!(

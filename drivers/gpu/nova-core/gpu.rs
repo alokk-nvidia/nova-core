@@ -34,7 +34,8 @@ use crate::{
     fsp::FspCotVersion,
     gsp::{
         commands::GetGspStaticInfoReply,
-        Gsp, //
+        Gsp,
+        GspBootContext, //
     },
     mm::{
         bar_user::BarUser,
@@ -373,7 +374,14 @@ impl Gpu {
 
                 gsp_static_info: {
                     cmdq_cell.set(core::ptr::addr_of!(gsp.as_ref().get_ref().cmdq));
-                    let info = gsp.boot(pdev, bar, chipset, gsp_falcon, sec2_falcon)?;
+                    let ctx = GspBootContext {
+                        pdev,
+                        bar,
+                        chipset,
+                        gsp_falcon,
+                        sec2_falcon,
+                    };
+                    let info = gsp.boot(&ctx)?;
 
                     dev_info!(
                         pdev.as_ref(),

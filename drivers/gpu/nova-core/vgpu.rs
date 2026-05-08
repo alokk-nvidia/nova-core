@@ -16,20 +16,27 @@ use kernel::{
 };
 
 use crate::{
-    driver::Bar1,
+    driver::{
+        Bar0,
+        Bar1, //
+    },
     gpu::Architecture,
+    gsp::{
+        cmdq::Cmdq,
+        nvkv, //
+    },
     mm::GpuMm, //
 };
 
 /// VRAM allocation with RAII lifetime. Drop frees blocks back to buddy allocator.
-#[expect(dead_code)]
 pub(crate) struct VramBlock {
     _blocks: Pin<KBox<AllocatedBlocks>>,
+    #[expect(dead_code)]
     pub addr: u64,
+    #[expect(dead_code)]
     pub size: u64,
 }
 
-#[expect(dead_code)]
 pub(crate) fn alloc_vram(mm: &GpuMm, size: u64, align: u64) -> Result<VramBlock> {
     let min_block_size =
         Alignment::new_checked(core::cmp::max(align, 4096) as usize).ok_or(EINVAL)?;
@@ -166,6 +173,7 @@ pub(crate) struct VgpuManager {
     pub(crate) gsp_config: GspConfig,
     pub(crate) comm_layout: CommBuffLayout,
     pub(crate) engine_masks: GmcEngineMasks,
+    pub(crate) instances: KVec<VgpuInstance>,
 }
 
 impl VgpuManager {
@@ -189,11 +197,16 @@ impl VgpuManager {
             gsp_config: GspConfig::default(),
             comm_layout: CommBuffLayout::default(),
             engine_masks: GmcEngineMasks::new(),
+            instances: KVec::new(),
         })
     }
 
     pub(crate) fn set_vgpu_enabled(&mut self, enabled: bool) {
         self.vgpu_enabled = enabled;
+    }
+
+    fn next_id(&mut self) -> i32 {
+        self.instances.len() as i32
     }
 
     /// One-time initialization after GSP boot completes.
@@ -219,7 +232,6 @@ pub(crate) struct ChidAllocator {
     total: u32,
 }
 
-#[expect(dead_code)]
 impl ChidAllocator {
     pub(crate) fn new(total: u32) -> Self {
         Self {
@@ -274,5 +286,225 @@ impl ChidAllocator {
             let bit = i % 64;
             self.bitmap[word] |= 1u64 << bit;
         }
+    }
+}
+
+// --- Gfid / Dbdf ---
+
+/// Guest Function ID. GFID 0 is reserved for PF, VFs start at 1.
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Gfid(pub u32);
+
+/// PCI address encoding: domain[31:16] bus[15:8] devfn[7:0].
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub(crate) struct Dbdf(pub u32);
+
+// --- VgpuType ---
+
+/// vGPU type descriptor, populated from QUERY_VGPU_PROPERTIES NVKV response.
+pub(crate) struct VgpuType {
+    pub name: [u8; 64],
+    pub class: [u8; 64],
+    pub vgpu_type_id: u32,
+    pub bar1_length: u64,
+    pub max_instance: u32,
+    pub ecc_supported: u32,
+    pub profile_size: u64,
+    pub max_fps: u32,
+    pub num_heads: u32,
+    pub max_res_x: u32,
+    pub max_res_y: u32,
+    pub fb_length: u64,
+    pub gsp_heap_size: u64,
+    pub fb_reservation: u64,
+}
+
+impl Default for VgpuType {
+    fn default() -> Self {
+        Self {
+            name: [0u8; 64],
+            class: [0u8; 64],
+            vgpu_type_id: 0,
+            bar1_length: 0,
+            max_instance: 0,
+            ecc_supported: 0,
+            profile_size: 0,
+            max_fps: 0,
+            num_heads: 0,
+            max_res_x: 0,
+            max_res_y: 0,
+            fb_length: 0,
+            gsp_heap_size: 0,
+            fb_reservation: 0,
+        }
+    }
+}
+
+/// NVKV key constants for QUERY_VGPU_PROPERTIES response decoding.
+mod vgpu_prop_keys {
+    pub(super) const TYPE_NAME: u16 = 0x3100;
+    pub(super) const CLASS: u16 = 0x3101;
+    pub(super) const TYPE_ID: u16 = 0x3102;
+    pub(super) const BAR1_LENGTH: u16 = 0x3103;
+    pub(super) const MAX_INSTANCE: u16 = 0x3104;
+    pub(super) const ECC: u16 = 0x3105;
+    pub(super) const PROFILE_SIZE: u16 = 0x3106;
+    pub(super) const MAX_FPS: u16 = 0x3107;
+    pub(super) const NUM_HEADS: u16 = 0x3108;
+    pub(super) const MAX_RES_X: u16 = 0x3109;
+    pub(super) const MAX_RES_Y: u16 = 0x310A;
+    pub(super) const DEV_ID: u16 = 0x310B;
+    pub(super) const SUBSYSTEM_ID: u16 = 0x310C;
+    pub(super) const FB_LENGTH: u16 = 0x310D;
+    pub(super) const GSP_HEAP_SIZE: u16 = 0x310E;
+    pub(super) const FB_RESERVATION: u16 = 0x310F;
+}
+
+pub(crate) mod gmcapi {
+    pub(crate) const VGPU_MGMT_QUERY_PROPERTIES: u32 = 0x1000_0006;
+    pub(crate) const VGPU_MGMT_QUERY_ASSIGNED_VF: u32 = 0x1000_0007;
+}
+
+// --- VgpuInstance ---
+
+/// A live vGPU instance with allocated resources.
+#[expect(dead_code)]
+pub(crate) struct VgpuInstance {
+    pub id: i32,
+    pub gfid: Gfid,
+    pub dbdf: Dbdf,
+    pub vgpu_type: VgpuType,
+    pub vm_pid: u32,
+    pub chid_offset: u32,
+    pub num_chid: u32,
+    pub num_plugin_channels: u32,
+    pub fbmem_heap: Option<VramBlock>,
+    pub mgmt_heap: Option<VramBlock>,
+    pub active: bool,
+}
+
+// --- GMCAPI query helpers ---
+
+/// Query the vGPU type assigned to a VF by its DBDF.
+#[expect(dead_code)]
+pub(crate) fn query_assigned_vf_type(cmdq: &Cmdq, bar: &Bar0, dbdf: Dbdf) -> Result<u32> {
+    let in_params = u64::from(dbdf.0).to_le_bytes();
+    let resp = cmdq.send_gmc_and_receive(
+        bar,
+        gmcapi::VGPU_MGMT_QUERY_ASSIGNED_VF,
+        &in_params,
+        64,
+    )?;
+    if resp.status != 0 {
+        return Err(EIO);
+    }
+    if resp.payload.len() < 4 {
+        return Err(ENODEV);
+    }
+    Ok(u32::from_le_bytes(
+        resp.payload[..4].try_into().map_err(|_| EINVAL)?,
+    ))
+}
+
+/// Query vGPU type properties and decode NVKV response.
+#[expect(dead_code)]
+pub(crate) fn query_vgpu_type(cmdq: &Cmdq, bar: &Bar0, type_id: u32) -> Result<VgpuType> {
+    let in_params = type_id.to_le_bytes();
+    let resp = cmdq.send_gmc_and_receive(
+        bar,
+        gmcapi::VGPU_MGMT_QUERY_PROPERTIES,
+        &in_params,
+        4096,
+    )?;
+    if resp.status != 0 {
+        return Err(EIO);
+    }
+
+    let mut vt = VgpuType::default();
+    nvkv::nvkv_decode(&resp.payload, |key, _index, value| match key {
+        vgpu_prop_keys::TYPE_NAME => nvkv::nvkv_read_string8(&value, &mut vt.name),
+        vgpu_prop_keys::CLASS => nvkv::nvkv_read_string8(&value, &mut vt.class),
+        vgpu_prop_keys::TYPE_ID => vt.vgpu_type_id = nvkv::nvkv_read_u32(&value),
+        vgpu_prop_keys::BAR1_LENGTH => vt.bar1_length = nvkv::nvkv_read_u64(&value),
+        vgpu_prop_keys::MAX_INSTANCE => vt.max_instance = nvkv::nvkv_read_u32(&value),
+        vgpu_prop_keys::ECC => vt.ecc_supported = nvkv::nvkv_read_u32(&value),
+        vgpu_prop_keys::PROFILE_SIZE => vt.profile_size = nvkv::nvkv_read_u64(&value),
+        vgpu_prop_keys::MAX_FPS => vt.max_fps = nvkv::nvkv_read_u32(&value),
+        vgpu_prop_keys::NUM_HEADS => vt.num_heads = nvkv::nvkv_read_u32(&value),
+        vgpu_prop_keys::MAX_RES_X => vt.max_res_x = nvkv::nvkv_read_u32(&value),
+        vgpu_prop_keys::MAX_RES_Y => vt.max_res_y = nvkv::nvkv_read_u32(&value),
+        vgpu_prop_keys::FB_LENGTH => vt.fb_length = nvkv::nvkv_read_u64(&value),
+        vgpu_prop_keys::GSP_HEAP_SIZE => vt.gsp_heap_size = nvkv::nvkv_read_u64(&value),
+        vgpu_prop_keys::FB_RESERVATION => vt.fb_reservation = nvkv::nvkv_read_u64(&value),
+        _ => {}
+    })?;
+
+    Ok(vt)
+}
+
+// --- VgpuManager: create / destroy ---
+
+impl VgpuManager {
+    /// Create a new vGPU instance with allocated resources.
+    #[expect(dead_code)]
+    #[expect(clippy::too_many_arguments)]
+    pub(crate) fn create_instance(
+        &mut self,
+        mm: &GpuMm,
+        chid_alloc: &mut ChidAllocator,
+        gfid: Gfid,
+        dbdf: Dbdf,
+        vgpu_type: VgpuType,
+        vm_pid: u32,
+    ) -> Result<VgpuInstance> {
+        let num_chid =
+            self.gsp_config.total_avail_chids / vgpu_type.max_instance.max(1);
+        let chid_offset = chid_alloc.alloc(num_chid)?;
+
+        let fb_size = vgpu_type.fb_length;
+        let fb_align = self.gsp_config.vmmu_segment_size;
+        let fbmem = alloc_vram(mm, fb_size, fb_align)
+            .inspect_err(|_| chid_alloc.free(chid_offset, num_chid))?;
+
+        let mgmt = alloc_vram(mm, vgpu_type.gsp_heap_size.max(self.comm_layout.total_size), 4096)
+            .inspect_err(|_| chid_alloc.free(chid_offset, num_chid))?;
+
+        Ok(VgpuInstance {
+            id: self.next_id(),
+            gfid,
+            dbdf,
+            vgpu_type,
+            vm_pid,
+            chid_offset,
+            num_chid,
+            num_plugin_channels: 3,
+            fbmem_heap: Some(fbmem),
+            mgmt_heap: Some(mgmt),
+            active: false,
+        })
+    }
+
+    /// Destroy a vGPU instance by GFID: free resources.
+    ///
+    /// Note: GSP shutdown/cleanup GMCAPI sequence is handled by the next
+    /// patch which adds the full teardown protocol.
+    #[expect(dead_code)]
+    pub(crate) fn destroy_instance(
+        &mut self,
+        chid_alloc: &mut ChidAllocator,
+        gfid: Gfid,
+    ) -> Result {
+        let idx = self
+            .instances
+            .iter()
+            .position(|i| i.gfid == gfid)
+            .ok_or(ENOENT)?;
+
+        let instance = self.instances.remove(idx).map_err(|_| EINVAL)?;
+        chid_alloc.free(instance.chid_offset, instance.num_chid);
+
+        Ok(())
     }
 }

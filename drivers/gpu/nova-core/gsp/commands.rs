@@ -33,6 +33,8 @@ pub(crate) struct GetGspStaticInfoReply {
     /// Usable FB (VRAM) region for driver memory allocation.
     #[expect(dead_code)]
     pub(crate) usable_fb_region: Range<u64>,
+    /// End of physical VRAM (exclusive), covering all FB regions.
+    pub(crate) total_fb_end: u64,
 }
 
 /// Error type for [`GetGspStaticInfoReply::gpu_name`].
@@ -174,10 +176,13 @@ pub(crate) fn gsp_init(
 
                     let usable_fb_region = first_usable_fb_region(&blob)?
                         .ok_or(ENODEV)?;
+                    let total_fb_end = total_fb_end(&blob)?
+                        .ok_or(ENODEV)?;
 
                     Ok(Some(GetGspStaticInfoReply {
                         gpu_name,
                         usable_fb_region,
+                        total_fb_end,
                     }))
                 } else {
                     on_boot_event(id, p0)?;
@@ -232,4 +237,33 @@ fn first_usable_fb_region(blob: &[u8]) -> Result<Option<Range<u64>>> {
     }
 
     Ok(None)
+}
+
+/// Compute the end of physical VRAM from all FB regions in the NVKV payload.
+///
+/// Returns the exclusive end address of the highest valid region.
+fn total_fb_end(blob: &[u8]) -> Result<Option<u64>> {
+    use nvkv::gsp_config_key::*;
+
+    let num_regions = match nvkv::find_imm32(blob, FB_REGION_COUNT)? {
+        Some(n) => n,
+        None => return Ok(None),
+    };
+
+    let mut max_end: Option<u64> = None;
+
+    for i in 0..num_regions {
+        let idx = i as u16;
+
+        let limit = match nvkv::find_seq64_indexed(blob, FB_REGION_LIMIT, idx)? {
+            Some(v) => v,
+            None => continue,
+        };
+
+        if let Some(end) = limit.checked_add(1) {
+            max_end = Some(max_end.map_or(end, |cur| cur.max(end)));
+        }
+    }
+
+    Ok(max_end)
 }

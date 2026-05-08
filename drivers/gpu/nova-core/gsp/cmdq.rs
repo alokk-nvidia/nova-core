@@ -28,7 +28,11 @@ use kernel::{
         aref::ARef,
         Mutex, //
     },
-    time::Delta,
+    time::{
+        Delta,
+        Instant,
+        Monotonic, //
+    },
     transmute::{
         AsBytes,
         FromBytes, //
@@ -805,6 +809,88 @@ impl Cmdq {
         let mut inner = self.inner.lock();
         inner.send_gmc(bar, command_id, payload, max_response_size)?;
         inner.receive_gmc(bar, Self::RECEIVE_TIMEOUT)
+    }
+
+    /// Send a GMC command and check the response status, ignoring the payload.
+    ///
+    /// Convenience wrapper around [`send_gmc_and_receive`](Self::send_gmc_and_receive)
+    /// for commands where only the success/failure status matters.
+    #[expect(dead_code)]
+    pub(crate) fn send_gmc_no_response(
+        &self,
+        bar: &Bar0,
+        command_id: u32,
+        payload: &[u8],
+    ) -> Result {
+        let resp = self.send_gmc_and_receive(bar, command_id, payload, 0)?;
+        if resp.status != 0 {
+            return Err(EIO);
+        }
+        Ok(())
+    }
+
+    /// Send a GMC command without waiting for a response (fire-and-forget).
+    ///
+    /// The GSP will process the command asynchronously and may later send a
+    /// GMC event that can be consumed via [`wait_gmc_event`](Self::wait_gmc_event).
+    #[expect(dead_code)]
+    pub(crate) fn send_gmc_fire_and_forget(
+        &self,
+        bar: &Bar0,
+        command_id: u32,
+        payload: &[u8],
+    ) -> Result {
+        let mut inner = self.inner.lock();
+        inner.send_gmc(bar, command_id, payload, 0)
+    }
+
+    /// Wait for a GMC event matching `predicate`, polling the message queue.
+    ///
+    /// Drains incoming GMC messages until `predicate(command_id, payload)` returns
+    /// `true` or `timeout` elapses. Non-matching messages are consumed and discarded.
+    #[expect(dead_code)]
+    pub(crate) fn wait_gmc_event<F>(&self, bar: &Bar0, timeout: Delta, mut predicate: F) -> Result
+    where
+        F: FnMut(u32, &[u8]) -> bool,
+    {
+        let start = Instant::<Monotonic>::now();
+        let inner = self.inner.lock();
+
+        loop {
+            let elapsed = Instant::<Monotonic>::now() - start;
+            if elapsed > timeout {
+                return Err(ETIMEDOUT);
+            }
+
+            let poll_step = Delta::from_millis(100);
+
+            let msg = match inner.wait_for_gmc_msg(bar, poll_step) {
+                Ok(msg) => msg,
+                Err(e) if e == ETIMEDOUT => continue,
+                Err(e) => return Err(e),
+            };
+
+            let command_id = msg.header.gmc.command_id;
+            let (s1, s2) = msg.contents;
+            let total_len = s1.len() + s2.len();
+            let advance_pages =
+                u32::try_from(msg.header.length().div_ceil(GSP_PAGE_SIZE)).unwrap_or(1);
+
+            let matched = if s2.is_empty() {
+                predicate(command_id, s1)
+            } else {
+                let mut buf = KVec::with_capacity(total_len, GFP_KERNEL)?;
+                buf.extend_from_slice(s1, GFP_KERNEL)?;
+                buf.extend_from_slice(s2, GFP_KERNEL)?;
+                predicate(command_id, &buf)
+            };
+
+            DmaGspMem::advance_cpu_read_ptr_v2(bar, advance_pages);
+
+            if matched {
+                return Ok(());
+            }
+        }
     }
 }
 

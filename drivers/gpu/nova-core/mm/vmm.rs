@@ -154,11 +154,6 @@ impl Vmm {
         mmu_version: MmuVersion,
         va_size: u64,
     ) -> Result<Self> {
-        // Only MMU v2 is supported for now.
-        if mmu_version != MmuVersion::V2 {
-            return Err(ENOTSUPP);
-        }
-
         let page_size: u64 = PAGE_SIZE.into_safe_cast();
         let va_pages: usize = (va_size / page_size).into_safe_cast();
         let virt_alloc = KBox::pin_init(MapleTreeAlloc::<()>::new(), GFP_KERNEL)?;

@@ -84,11 +84,16 @@
 
 #![expect(unused)]
 
+pub(crate) mod hal;
+
 use core::ops::Range;
+
+use hal::Bar0WindowHal;
 
 use crate::{
     bounded_enum,
     driver::Bar0,
+    gpu::Chipset,
     num::IntoSafeCast,
     regs, //
 };
@@ -137,7 +142,7 @@ macro_rules! define_pramin_read {
                 self.compute_window(vram_offset, ::core::mem::size_of::<$ty>())?;
 
             if let Some(base) = new_base {
-                Self::write_window_base(self.bar, base)?;
+                self.hal.write_window_base(self.bar, base)?;
                 *self.state = base;
             }
             self.bar.$name(bar_offset)
@@ -154,7 +159,7 @@ macro_rules! define_pramin_write {
                 self.compute_window(vram_offset, ::core::mem::size_of::<$ty>())?;
 
             if let Some(base) = new_base {
-                Self::write_window_base(self.bar, base)?;
+                self.hal.write_window_base(self.bar, base)?;
                 *self.state = base;
             }
             self.bar.$name(value, bar_offset)
@@ -170,6 +175,8 @@ pub(crate) struct Pramin {
     bar: Arc<Devres<Bar0>>,
     /// Valid VRAM region. Accesses outside this range are rejected.
     vram_region: Range<u64>,
+    /// Architecture-specific BAR0 window register accessor.
+    hal: &'static dyn Bar0WindowHal,
     /// PRAMIN aperture state, protected by a mutex.
     ///
     /// # Invariants
@@ -189,14 +196,17 @@ impl Pramin {
     pub(crate) fn new(
         bar: Arc<Devres<Bar0>>,
         dev: &device::Device<device::Bound>,
+        chipset: Chipset,
         vram_region: Range<u64>,
     ) -> Result<impl PinInit<Self>> {
+        let hal = hal::pramin_hal(chipset);
         let bar_access = bar.access(dev)?;
-        let current_base = Self::read_window_base(bar_access);
+        let current_base = hal.read_window_base(bar_access);
 
         Ok(pin_init!(Self {
             bar,
             vram_region,
+            hal,
             state <- new_mutex!(current_base, "pramin_state"),
         }))
     }
@@ -219,16 +229,9 @@ impl Pramin {
         Ok(PraminWindow {
             bar,
             vram_region: self.vram_region.clone(),
+            hal: self.hal,
             state,
         })
-    }
-
-    /// Read the current window base from the BAR0_WINDOW register.
-    fn read_window_base(bar: &Bar0) -> u64 {
-        let reg = bar.read(regs::NV_PBUS_BAR0_WINDOW);
-
-        // TODO: Convert to Bounded<u64, 40> when available.
-        u64::from(reg.window_base()) << 16
     }
 }
 
@@ -242,22 +245,11 @@ impl Pramin {
 pub(crate) struct PraminWindow<'a> {
     bar: &'a Bar0,
     vram_region: Range<u64>,
+    hal: &'static dyn Bar0WindowHal,
     state: MutexGuard<'a, u64>,
 }
 
 impl PraminWindow<'_> {
-    /// Write a new window base to the BAR0_WINDOW register.
-    fn write_window_base(bar: &Bar0, base: u64) -> Result {
-        // CAST: After >> 16, a VRAM address fits in u32.
-        let window_base = (base >> 16) as u32;
-        bar.write_reg(
-            regs::NV_PBUS_BAR0_WINDOW::zeroed()
-                .with_target(Bar0WindowTarget::Vram)
-                .try_with_window_base(window_base)?,
-        );
-        Ok(())
-    }
-
     /// Compute window parameters for a VRAM access.
     ///
     /// Returns (`bar_offset`, `new_base`) where:
@@ -477,24 +469,7 @@ pub(crate) fn run_self_test(
     pramin: &Pramin,
     chipset: crate::gpu::Chipset,
 ) -> Result {
-    use crate::gpu::Architecture;
-
     let dev = pdev;
-
-    // PRAMIN uses NV_PBUS_BAR0_WINDOW which is only available on pre-Hopper GPUs.
-    // Hopper+ uses NV_XAL_EP_BAR0_WINDOW instead, requiring a separate HAL that
-    // has not been implemented yet.
-    if !matches!(
-        chipset.arch(),
-        Architecture::Turing | Architecture::Ampere | Architecture::Ada
-    ) {
-        dev_info!(
-            dev,
-            "PRAMIN: Skipping self-tests for {:?} (only pre-Hopper supported)\n",
-            chipset
-        );
-        return Ok(());
-    }
 
     dev_info!(dev, "PRAMIN: Starting self-test...\n");
 

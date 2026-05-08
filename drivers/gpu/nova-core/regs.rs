@@ -120,11 +120,23 @@ register! {
 }
 
 register! {
-    /// BAR0 window control for PRAMIN access.
+    /// BAR0 window control for PRAMIN access (pre-Hopper via PBUS).
     pub(crate) NV_PBUS_BAR0_WINDOW(u32) @ 0x00001700 {
         25:24   target ?=> Bar0WindowTarget;
         /// Window base address (bits 39:16 of FB addr).
         23:0    window_base;
+    }
+}
+
+register! {
+    /// BAR0 window control for PRAMIN access (Hopper+ via XAL_EP).
+    ///
+    /// On Hopper and later architectures the BAR0 window base register moved
+    /// from NV_PBUS (0x1700) to NV_XAL_EP (base 0x10F000, offset 0xD40).
+    /// No target field; vidmem-only.
+    pub(crate) NV_XAL_EP_BAR0_WINDOW(u32) @ 0x0010_FD40 {
+        /// Window base address (bits 38:16 of FB addr).
+        22:0    base;
     }
 }
 

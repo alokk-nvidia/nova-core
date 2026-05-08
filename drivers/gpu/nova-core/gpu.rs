@@ -434,7 +434,7 @@ impl Gpu {
                         base_offset: usable_vram.start,
                         size: usable_vram.end - usable_vram.start,
                         chunk_size: Alignment::new::<SZ_4K>(),
-                    }, pramin_vram_region)?
+                    }, spec.chipset, pramin_vram_region)?
                 },
 
                 _fwctl_reg <- {

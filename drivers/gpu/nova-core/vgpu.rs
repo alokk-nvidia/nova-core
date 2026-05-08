@@ -16,7 +16,6 @@ use crate::gpu::Architecture;
 pub(crate) struct VgpuManager {
     pub(crate) vgpu_requested: bool,
     pub(crate) vgpu_enabled: bool,
-    #[expect(dead_code)]
     pub(crate) total_vfs: u16,
 }
 

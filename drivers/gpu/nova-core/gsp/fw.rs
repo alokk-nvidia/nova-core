@@ -74,6 +74,18 @@ const GSP_FW_HEAP_PARAM_CLIENT_ALLOC_SIZE_GH100: u64 = 142 * num::usize_as_u64(S
 // plus Hopper+ additions in kgspCalculateGspFwHeapSize_GH100.
 const GSP_FW_HEAP_SIZE_OVERRIDE_LIBOS3_BAREMETAL_MIN_MB_HOPPER: u64 = 170;
 
+const GSP_FW_HEAP_SIZE_VGPU_1VM: u64 = 174 * num::usize_as_u64(SZ_1M);
+const GSP_FW_HEAP_SIZE_VGPU_DEFAULT: u64 = 581 * num::usize_as_u64(SZ_1M);
+const GSP_FW_HEAP_SIZE_VGPU_48VMS: u64 = 1370 * num::usize_as_u64(SZ_1M);
+
+pub(crate) fn vgpu_fw_heap_size(total_vfs: u32) -> u64 {
+    match total_vfs {
+        1 => GSP_FW_HEAP_SIZE_VGPU_1VM,
+        2..=32 => GSP_FW_HEAP_SIZE_VGPU_DEFAULT,
+        _ => GSP_FW_HEAP_SIZE_VGPU_48VMS,
+    }
+}
+
 impl GspFwHeapParams {
     /// Returns the amount of GSP-RM heap memory used during GSP-RM boot and initialization (up to
     /// and including the first client subdevice allocation).

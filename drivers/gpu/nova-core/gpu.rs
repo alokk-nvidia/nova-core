@@ -408,6 +408,7 @@ impl Gpu {
                         sec2_falcon,
                         fsp_falcon: None,
                         vgpu_requested: mgr.vgpu_requested,
+                        total_vfs: mgr.total_vfs,
                     };
                     let info = gsp.boot(&mut ctx)?;
                     mgr.set_vgpu_enabled(ctx.vgpu_requested);

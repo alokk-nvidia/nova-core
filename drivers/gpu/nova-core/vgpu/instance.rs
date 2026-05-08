@@ -95,8 +95,8 @@ impl Default for VgpuType {
 }
 
 /// A live vGPU instance with allocated resources.
-#[expect(dead_code)]
 pub(crate) struct VgpuInstance {
+    #[expect(dead_code)]
     pub id: i32,
     pub gfid: Gfid,
     pub dbdf: Dbdf,
@@ -112,7 +112,6 @@ pub(crate) struct VgpuInstance {
 }
 
 /// Query the vGPU type assigned to a VF by its DBDF.
-#[expect(dead_code)]
 pub(crate) fn query_assigned_vf_type(cmdq: &Cmdq, bar: &Bar0, dbdf: Dbdf) -> Result<u32> {
     let in_params = u64::from(dbdf.0).to_le_bytes();
     let resp =
@@ -129,7 +128,6 @@ pub(crate) fn query_assigned_vf_type(cmdq: &Cmdq, bar: &Bar0, dbdf: Dbdf) -> Res
 }
 
 /// Query vGPU type properties and decode NVKV response.
-#[expect(dead_code)]
 pub(crate) fn query_vgpu_type(cmdq: &Cmdq, bar: &Bar0, type_id: u32) -> Result<VgpuType> {
     let in_params = type_id.to_le_bytes();
     let resp =
@@ -169,7 +167,6 @@ impl VgpuManager {
     /// The caller must invoke [`activate_instance`] afterwards (outside the
     /// manager lock) to bootload the GSP plugin and negotiate the RPC
     /// channel.
-    #[expect(dead_code)]
     #[expect(clippy::too_many_arguments)]
     pub(crate) fn allocate_instance(
         &mut self,
@@ -243,7 +240,6 @@ impl VgpuManager {
     }
 
     /// Destroy a vGPU instance by GFID: send GSP shutdown sequence, then free resources.
-    #[expect(dead_code)]
     pub(crate) fn destroy_instance(
         &mut self,
         dev: &device::Device<device::Bound>,
@@ -281,7 +277,6 @@ impl VgpuManager {
 /// Bootload the GSP plugin and negotiate the RPC channel for an allocated
 /// instance.  Called **without** holding the `VgpuManager` or `ChidAllocator`
 /// locks.
-#[expect(dead_code)]
 pub(crate) fn activate_instance(
     dev: &device::Device<device::Bound>,
     cmdq: &Cmdq,
@@ -289,13 +284,10 @@ pub(crate) fn activate_instance(
     instance: &mut VgpuInstance,
     engine_masks: &super::GmcEngineMasks,
 ) -> Result {
-    let mut rpc = instance.plugin_rpc.take().ok_or(EINVAL)?;
-    rpc.init_rpc(dev)?;
-    instance.plugin_rpc = Some(rpc);
-
     bootload(dev, cmdq, bar, instance, engine_masks)?;
 
     let mut rpc = instance.plugin_rpc.take().ok_or(EINVAL)?;
+    rpc.init_rpc(dev)?;
     rpc.negotiate_rpc_version(dev, bar, instance.gfid)?;
     rpc.send_config_params(dev, bar, instance)?;
     rpc.set_bme(dev, bar, instance.gfid, true)?;

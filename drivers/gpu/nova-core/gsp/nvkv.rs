@@ -22,6 +22,10 @@ fn header_key(hdr: u64) -> u16 {
     (hdr & 0xFFFF) as u16
 }
 
+fn header_index(hdr: u64) -> u16 {
+    ((hdr >> 16) & 0xFFF) as u16
+}
+
 fn header_opcode(hdr: u64) -> u32 {
     ((hdr >> 28) & 0xF) as u32
 }
@@ -57,6 +61,18 @@ fn data_u64s(opcode: u32, count: u32) -> Result<usize> {
 pub(crate) mod gsp_config_key {
     /// GPU name string (`ARRAY8`, null-terminated).
     pub(crate) const GPU_NAME_STRING: u16 = 0x2000;
+    /// Number of FB regions (`IMM32`).
+    pub(crate) const FB_REGION_COUNT: u16 = 0x0010;
+    /// FB region base address (`SEQ64`, indexed).
+    pub(crate) const FB_REGION_BASE: u16 = 0x1011;
+    /// FB region limit address (`SEQ64`, indexed).
+    pub(crate) const FB_REGION_LIMIT: u16 = 0x1012;
+    /// FB region flags (`SEQ32`, indexed). Bit 0=compression, 1=ISO, 2=protected.
+    pub(crate) const FB_REGION_FLAGS: u16 = 0x0012;
+    /// FB region tag (`SEQ32`, indexed). TAG_NONE (0) indicates usable.
+    pub(crate) const FB_REGION_TAG: u16 = 0x0013;
+    /// Tag value indicating no reservation.
+    pub(crate) const FB_REGION_TAG_NONE: u32 = 0;
 }
 
 /// System-info key constants for `GMCAPI_CMD_GSP_INIT`.
@@ -181,6 +197,154 @@ pub(crate) fn find_array8<'a>(payload: &'a [u8], target_key: u16) -> Result<Opti
                 return Err(EINVAL);
             }
             return Ok(Some(&payload[byte_offset..byte_offset + byte_count]));
+        }
+
+        pos += n_data;
+    }
+
+    Ok(None)
+}
+
+/// Find an `IMM32` key and return its 32-bit value.
+///
+/// Returns `None` if the key is not present.
+pub(crate) fn find_imm32(payload: &[u8], target_key: u16) -> Result<Option<u32>> {
+    if payload.len() % 8 != 0 {
+        return Err(EINVAL);
+    }
+
+    let qwords = payload.len() / 8;
+    let mut pos = 0usize;
+
+    while pos < qwords {
+        let hdr = u64::from_le_bytes(
+            payload[pos * 8..(pos + 1) * 8]
+                .try_into()
+                .map_err(|_| EINVAL)?,
+        );
+        pos += 1;
+
+        let opcode = header_opcode(hdr);
+        let key = header_key(hdr);
+        let count = header_count(hdr);
+        let n_data = data_u64s(opcode, count)?;
+
+        if pos + n_data > qwords {
+            return Err(EINVAL);
+        }
+
+        if key == target_key && opcode == OPCODE_IMM32 {
+            return Ok(Some(count));
+        }
+
+        pos += n_data;
+    }
+
+    Ok(None)
+}
+
+/// Find a `SEQ64` entry matching `target_key` and `target_index`, returning
+/// the first `u64` value in the sequence.
+///
+/// In NVKV, indexed keys use the header's 12-bit index field (bits 27:16).
+/// `SEQ64` entries encode a run of sequential keys starting at `target_key`;
+/// the nth u64 in the payload corresponds to `target_key + n`.
+pub(crate) fn find_seq64_indexed(
+    payload: &[u8],
+    target_key: u16,
+    target_index: u16,
+) -> Result<Option<u64>> {
+    if payload.len() % 8 != 0 {
+        return Err(EINVAL);
+    }
+
+    let qwords = payload.len() / 8;
+    let mut pos = 0usize;
+
+    while pos < qwords {
+        let hdr = u64::from_le_bytes(
+            payload[pos * 8..(pos + 1) * 8]
+                .try_into()
+                .map_err(|_| EINVAL)?,
+        );
+        pos += 1;
+
+        let opcode = header_opcode(hdr);
+        let key = header_key(hdr);
+        let index = header_index(hdr);
+        let count = header_count(hdr);
+        let n_data = data_u64s(opcode, count)?;
+
+        if pos + n_data > qwords {
+            return Err(EINVAL);
+        }
+
+        if opcode == OPCODE_SEQ64 && index == target_index {
+            let offset = target_key.wrapping_sub(key) as usize;
+            if offset < n_data {
+                let val = u64::from_le_bytes(
+                    payload[(pos + offset) * 8..(pos + offset + 1) * 8]
+                        .try_into()
+                        .map_err(|_| EINVAL)?,
+                );
+                return Ok(Some(val));
+            }
+        }
+
+        pos += n_data;
+    }
+
+    Ok(None)
+}
+
+/// Find a `SEQ32` entry matching `target_key` and `target_index`, returning
+/// the first `u32` value in the sequence.
+pub(crate) fn find_seq32_indexed(
+    payload: &[u8],
+    target_key: u16,
+    target_index: u16,
+) -> Result<Option<u32>> {
+    if payload.len() % 8 != 0 {
+        return Err(EINVAL);
+    }
+
+    let qwords = payload.len() / 8;
+    let mut pos = 0usize;
+
+    while pos < qwords {
+        let hdr = u64::from_le_bytes(
+            payload[pos * 8..(pos + 1) * 8]
+                .try_into()
+                .map_err(|_| EINVAL)?,
+        );
+        pos += 1;
+
+        let opcode = header_opcode(hdr);
+        let key = header_key(hdr);
+        let index = header_index(hdr);
+        let count = header_count(hdr);
+        let n_data = data_u64s(opcode, count)?;
+
+        if pos + n_data > qwords {
+            return Err(EINVAL);
+        }
+
+        if opcode == OPCODE_SEQ32 && index == target_index {
+            let offset = target_key.wrapping_sub(key) as usize;
+            if offset < count as usize {
+                let qword_idx = offset / 2;
+                let qword = u64::from_le_bytes(
+                    payload[(pos + qword_idx) * 8..(pos + qword_idx + 1) * 8]
+                        .try_into()
+                        .map_err(|_| EINVAL)?,
+                );
+                let val = if offset % 2 == 0 {
+                    qword as u32
+                } else {
+                    (qword >> 32) as u32
+                };
+                return Ok(Some(val));
+            }
         }
 
         pos += n_data;

@@ -404,7 +404,7 @@ impl Fsp {
 
         let msg = KBox::new(
             FspMessage {
-                mctp_header: mctp::TransportHeader::new(true, true, 0, 0, 0).into(),
+                mctp_header: mctp::TransportHeader::new(true, true).into(),
                 nvdm_header: mctp::NvdmHeader::new(mctp::nvdm_type::COT).into(),
 
                 cot: NvdmPayloadCot {
@@ -473,7 +473,7 @@ impl Fsp {
         let error_code = response.response.error_code;
 
         let transport = mctp::TransportHeader::from_raw(mctp_header);
-        if !transport.som() || !transport.eom() {
+        if !transport.som().into_bool() || !transport.eom().into_bool() {
             dev_err!(
                 dev,
                 "Unexpected MCTP header in FSP reply: {:#x}\n",
@@ -483,9 +483,9 @@ impl Fsp {
         }
 
         let nvdm = mctp::NvdmHeader::from_raw(nvdm_header);
-        if nvdm.msg_type() != mctp::MSG_TYPE_VENDOR_PCI
-            || nvdm.vendor_id() != mctp::VENDOR_ID_NV
-            || nvdm.nvdm_type() != mctp::nvdm_type::FSP_RESPONSE
+        if nvdm.msg_type().get() != mctp::MSG_TYPE_VENDOR_PCI as u32
+            || nvdm.vendor_id().get() != mctp::VENDOR_ID_NV as u32
+            || nvdm.nvdm_type().get() != mctp::nvdm_type::FSP_RESPONSE as u32
         {
             dev_err!(
                 dev,

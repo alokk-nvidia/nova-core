@@ -10,6 +10,7 @@ use r570_144 as r570;
 use core::ops::Range;
 
 use kernel::{
+    bitfield,
     dma::Coherent,
     io::{
         self,
@@ -511,8 +512,8 @@ unsafe impl AsBytes for MsgqRxHeader {}
 
 bitfield! {
     struct MsgHeaderVersion(u32) {
-        31:24 major as u8;
-        23:16 minor as u8;
+        31:24 major;
+        23:16 minor;
     }
 }
 
@@ -521,9 +522,9 @@ impl MsgHeaderVersion {
     const MINOR_TOT: u8 = 0;
 
     fn new() -> Self {
-        Self::default()
-            .set_major(Self::MAJOR_TOT)
-            .set_minor(Self::MINOR_TOT)
+        Self::from_raw(0)
+            .with_major(Self::MAJOR_TOT)
+            .with_minor(Self::MINOR_TOT)
     }
 }
 
@@ -586,7 +587,7 @@ impl GspMsgElement {
         try_init!(GspMsgElement {
             mctp_magic: MCTP_MAGIC,
             mctp_payload_size: (size_of::<Self>() - 8 + cmd_size) as u32,
-            mctp_header: mctp::TransportHeader::new(true, true, 0, 0, 0).into(),
+            mctp_header: mctp::TransportHeader::new(true, true).into(),
             nvdm_header: mctp::NvdmHeader::new(mctp::nvdm_type::RM_RPC).into(),
             nvdm_payload_size: (size_of::<RpcMessageHeader>() + cmd_size) as u32,
             reserved: 0u32,
@@ -729,7 +730,7 @@ impl GspGmcMsgElement {
         try_init!(GspGmcMsgElement {
             mctp_magic: MCTP_MAGIC,
             mctp_payload_size: (size_of::<Self>() - 8 + payload_size) as u32,
-            mctp_header: mctp::TransportHeader::new(true, true, 0, 0, 0).into(),
+            mctp_header: mctp::TransportHeader::new(true, true).into(),
             nvdm_header: mctp::NvdmHeader::new(mctp::nvdm_type::GMCAPI).into(),
             nvdm_payload_size: (size_of::<GmcApiHeader>() + payload_size) as u32,
             reserved: 0u32,

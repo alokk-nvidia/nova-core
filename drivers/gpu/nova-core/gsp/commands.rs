@@ -2,6 +2,7 @@
 
 use core::{
     ffi::FromBytesUntilNulError,
+    ops::Range,
     str::Utf8Error, //
 };
 
@@ -29,6 +30,9 @@ const GSP_INIT_MAX_RESPONSE_SIZE: u32 = 8192;
 /// The reply from the GSP to the `GSP_INIT` GMC command.
 pub(crate) struct GetGspStaticInfoReply {
     gpu_name: [u8; 64],
+    /// Usable FB (VRAM) region for driver memory allocation.
+    #[expect(dead_code)]
+    pub(crate) usable_fb_region: Range<u64>,
 }
 
 /// Error type for [`GetGspStaticInfoReply::gpu_name`].
@@ -167,7 +171,14 @@ pub(crate) fn gsp_init(
                         let len = name_bytes.len().min(gpu_name.len());
                         gpu_name[..len].copy_from_slice(&name_bytes[..len]);
                     }
-                    Ok(Some(GetGspStaticInfoReply { gpu_name }))
+
+                    let usable_fb_region = first_usable_fb_region(&blob)?
+                        .ok_or(ENODEV)?;
+
+                    Ok(Some(GetGspStaticInfoReply {
+                        gpu_name,
+                        usable_fb_region,
+                    }))
                 } else {
                     on_boot_event(id, p0)?;
                     Ok(None)
@@ -179,4 +190,46 @@ pub(crate) fn gsp_init(
             return Ok(reply);
         }
     }
+}
+
+/// Extracts the first usable FB region from an NVKV-encoded GSP_INIT response.
+///
+/// Usable regions satisfy: not protected, supports compression and ISO,
+/// and tag == TAG_NONE (not reserved by firmware).
+fn first_usable_fb_region(blob: &[u8]) -> Result<Option<Range<u64>>> {
+    use nvkv::gsp_config_key::*;
+
+    let num_regions = match nvkv::find_imm32(blob, FB_REGION_COUNT)? {
+        Some(n) => n,
+        None => return Ok(None),
+    };
+
+    for i in 0..num_regions {
+        let idx = i as u16;
+
+        let base = match nvkv::find_seq64_indexed(blob, FB_REGION_BASE, idx)? {
+            Some(v) => v,
+            None => continue,
+        };
+        let limit = match nvkv::find_seq64_indexed(blob, FB_REGION_LIMIT, idx)? {
+            Some(v) => v,
+            None => continue,
+        };
+        let flags = nvkv::find_seq32_indexed(blob, FB_REGION_FLAGS, idx)?
+            .unwrap_or(0);
+        let tag = nvkv::find_seq32_indexed(blob, FB_REGION_TAG, idx)?
+            .unwrap_or(u32::MAX);
+
+        let compression_supported = flags & 1 != 0;
+        let iso_supported = flags & 2 != 0;
+        let protected = flags & 4 != 0;
+
+        if !protected && compression_supported && iso_supported && tag == FB_REGION_TAG_NONE {
+            if let Some(end) = limit.checked_add(1) {
+                return Ok(Some(base..end));
+            }
+        }
+    }
+
+    Ok(None)
 }

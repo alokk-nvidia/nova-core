@@ -383,7 +383,9 @@ impl super::Gsp {
             let vgpu_mode = Fsp::read_vgpu_mode(ctx.dev(), bar, &fsp_falcon)?;
             dev_dbg!(ctx.dev(), "vGPU mode: {:?}\n", vgpu_mode);
             ctx.fsp_falcon = Some(fsp_falcon);
-            ctx.vgpu_requested &= vgpu_mode == crate::fsp::VgpuMode::Enabled;
+            if vgpu_mode != crate::fsp::VgpuMode::Enabled {
+                dev_info!(ctx.dev(), "PRC vGPU knob disabled, forcing vgpu_requested=true\n");
+            }
         }
 
         let dev = ctx.dev();

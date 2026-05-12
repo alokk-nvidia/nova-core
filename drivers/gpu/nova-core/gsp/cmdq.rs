@@ -245,8 +245,7 @@ impl DmaGspMem {
         const ENTRY_OFF: u32 = num::usize_into_u32::<{ mem::offset_of!(Msgq, msgq) }>();
 
         let mut gsp_mem = CoherentBox::<GspMem>::zeroed(dev, GFP_KERNEL)?;
-        gsp_mem.cpuq.tx =
-            MsgqTxHeader::new_v2(MSGQ_SIZE, MSG_SIZE, MSGQ_NUM_PAGES, ENTRY_OFF);
+        gsp_mem.cpuq.tx = MsgqTxHeader::new_v2(MSGQ_SIZE, MSG_SIZE, MSGQ_NUM_PAGES, ENTRY_OFF);
 
         let gsp_mem: Coherent<_> = gsp_mem.into();
         let start = gsp_mem.dma_handle();
@@ -962,7 +961,7 @@ impl CmdqInner {
 
         let msg_element = GspGmcMsgElement::init(
             command_id,
-            self.seq as u64,
+            u64::from(self.seq),
             payload.len(),
             max_response_size,
         );

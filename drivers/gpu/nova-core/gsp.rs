@@ -217,11 +217,7 @@ impl debugfs::BinaryWriter for LogBuffer {
         }
 
         if written < count {
-            let buf_start = if offset_val > self.header_len {
-                offset_val - self.header_len
-            } else {
-                0
-            };
+            let buf_start = offset_val.saturating_sub(self.header_len);
             let buf_count = count - written;
             writer.write_dma(&self.buffer, buf_start, buf_count)?;
             written += buf_count;

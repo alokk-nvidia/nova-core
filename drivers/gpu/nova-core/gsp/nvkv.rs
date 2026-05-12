@@ -39,7 +39,7 @@ fn header_count(hdr: u64) -> u32 {
 /// `count_or_value` carries the byte count for `ARRAY*` opcodes and the
 /// immediate value for `IMM32`.
 fn make_header(opcode: u32, key: u16, count_or_value: u32) -> u64 {
-    (key as u64) | ((opcode as u64 & 0xF) << 28) | ((count_or_value as u64) << 32)
+    u64::from(key) | ((u64::from(opcode) & 0xF) << 28) | (u64::from(count_or_value) << 32)
 }
 
 /// Number of data `u64`s that follow a given header.

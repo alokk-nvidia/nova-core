@@ -1288,6 +1288,7 @@ impl<IO: ?Sized + Io + IoCopyable> View<'_, IO, [u8]> {
 /// let whole: View<'_, _, MyStruct> = io_project!(mmio, [try: 2]);
 /// let nested: View<'_, Mmio<_>, u32> = io_project!(whole, .field);
 /// # Ok::<(), Error>(()) }
+#[allow(clippy::unnecessary_safety_comment)]
 #[macro_export]
 #[doc(hidden)]
 macro_rules! io_project {
@@ -1329,6 +1330,7 @@ pub use crate::io_project;
 /// // let mmio: Mmio<[MyStruct]>;
 /// let field: u32 = kernel::io::io_read!(mmio, [try: 2].field);
 /// # Ok::<(), Error>(()) }
+#[allow(clippy::unnecessary_safety_comment)]
 #[macro_export]
 #[doc(hidden)]
 macro_rules! io_read {
@@ -1361,6 +1363,7 @@ pub use crate::io_read;
 /// // let mmio: Mmio<[MyStruct]>;
 /// kernel::io::io_write!(mmio, [try: 2].field, 10);
 /// # Ok::<(), Error>(()) }
+#[allow(clippy::unnecessary_safety_comment)]
 #[macro_export]
 #[doc(hidden)]
 macro_rules! io_write {

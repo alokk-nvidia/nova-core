@@ -51,7 +51,6 @@ use crate::{
     },
 };
 
-
 /// Maximum size of a single GSP message queue element in bytes.
 pub(crate) const GSP_MSG_QUEUE_ELEMENT_SIZE_MAX: usize =
     num::u32_as_usize(r570::GSP_MSG_QUEUE_ELEMENT_SIZE_MAX);

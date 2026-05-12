@@ -92,7 +92,7 @@ impl fwctl::Operations for NovaCoreFwCtl {
 
         let bar = data.bar.access(device.parent())?;
         let response = data.cmdq().send_gmc_and_receive(
-            &*bar,
+            bar,
             command_id,
             payload,
             GSP_GMC_MAX_RESPONSE_SIZE,

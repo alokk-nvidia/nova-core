@@ -113,10 +113,8 @@ impl Io for Emem<'_> {
     type Type = Region;
 
     fn as_ptr(&self) -> *mut Self::Type {
-        core::ptr::slice_from_raw_parts_mut(
-            core::ptr::null_mut::<u8>(),
-            EMEM_MAX_SIZE.as_usize(),
-        ) as *mut Self::Type
+        core::ptr::slice_from_raw_parts_mut(core::ptr::null_mut::<u8>(), EMEM_MAX_SIZE.as_usize())
+            as *mut Self::Type
     }
 }
 

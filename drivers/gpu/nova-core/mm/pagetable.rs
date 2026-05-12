@@ -22,9 +22,9 @@ use crate::mm::{
     VirtualAddress,
     VramAddress, //
 };
-use kernel::prelude::*;
 #[cfg(CONFIG_NOVA_MM_SELFTESTS)]
 use kernel::device;
+use kernel::prelude::*;
 
 /// Extracts the page table index at a given level from a virtual address.
 pub(super) trait VaLevelIndex {
@@ -45,9 +45,9 @@ impl From<Architecture> for MmuVersion {
     fn from(arch: Architecture) -> Self {
         match arch {
             Architecture::Turing | Architecture::Ampere | Architecture::Ada => Self::V2,
-            Architecture::Hopper
-            | Architecture::BlackwellGB10x
-            | Architecture::BlackwellGB20x => Self::V3,
+            Architecture::Hopper | Architecture::BlackwellGB10x | Architecture::BlackwellGB20x => {
+                Self::V3
+            }
         }
     }
 }

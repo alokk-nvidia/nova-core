@@ -175,16 +175,11 @@ pub(crate) fn gsp_init(
                         gpu_name[..len].copy_from_slice(&name_bytes[..len]);
                     }
 
-                    let usable_fb_region = first_usable_fb_region(&blob)?
-                        .ok_or(ENODEV)?;
-                    let total_fb_end = total_fb_end(&blob)?
-                        .ok_or(ENODEV)?;
-                    let bar1_pde_base = nvkv::find_seq64_indexed(
-                        &blob,
-                        nvkv::gsp_config_key::BAR1_PDE_BASE,
-                        0,
-                    )?
-                    .ok_or(ENODEV)?;
+                    let usable_fb_region = first_usable_fb_region(&blob)?.ok_or(ENODEV)?;
+                    let total_fb_end = total_fb_end(&blob)?.ok_or(ENODEV)?;
+                    let bar1_pde_base =
+                        nvkv::find_seq64_indexed(&blob, nvkv::gsp_config_key::BAR1_PDE_BASE, 0)?
+                            .ok_or(ENODEV)?;
 
                     Ok(Some(GetGspStaticInfoReply {
                         gpu_name,
@@ -228,10 +223,8 @@ fn first_usable_fb_region(blob: &[u8]) -> Result<Option<Range<u64>>> {
             Some(v) => v,
             None => continue,
         };
-        let flags = nvkv::find_seq32_indexed(blob, FB_REGION_FLAGS, idx)?
-            .unwrap_or(0);
-        let tag = nvkv::find_seq32_indexed(blob, FB_REGION_TAG, idx)?
-            .unwrap_or(u32::MAX);
+        let flags = nvkv::find_seq32_indexed(blob, FB_REGION_FLAGS, idx)?.unwrap_or(0);
+        let tag = nvkv::find_seq32_indexed(blob, FB_REGION_TAG, idx)?.unwrap_or(u32::MAX);
 
         let compression_supported = flags & 1 != 0;
         let iso_supported = flags & 2 != 0;

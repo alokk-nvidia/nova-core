@@ -175,11 +175,7 @@ impl Vmm {
     }
 
     /// Allocate a contiguous virtual frame number range.
-    fn alloc_vfn_range(
-        &self,
-        num_pages: usize,
-        va_range: Option<Range<u64>>,
-    ) -> Result<Vfn> {
+    fn alloc_vfn_range(&self, num_pages: usize, va_range: Option<Range<u64>>) -> Result<Vfn> {
         let page_size: u64 = PAGE_SIZE.into_safe_cast();
 
         let start_vfn = match va_range {

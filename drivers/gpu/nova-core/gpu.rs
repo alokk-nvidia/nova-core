@@ -22,8 +22,7 @@ use kernel::{
 use crate::{
     bounded_enum,
     driver::{
-        Bar0,
-        BAR1_SIZE, //
+        Bar0, //
     },
     falcon::{
         gsp::Gsp as GspFalcon,
@@ -373,14 +372,6 @@ impl Gpu {
                 gsp <- Gsp::new(pdev, chipset, build_id.as_ref()),
 
                 gsp_static_info: {
-                    // SAFETY: `gsp.cmdq` is pinned inside `Gsp` which is owned by
-                    // this `Gpu`, and the fwctl `Devres` registration is torn down
-                    // before `Gsp` is dropped. Use `get_unchecked_mut` + `addr_of!`
-                    // to extract the pointer without consuming the pin-init field
-                    // reference. Store it in `cmdq_cell` because pin-init blocks
-                    // capture by move and cannot share mutable locals.
-                    // SAFETY: We do not move the pinned `Gsp`; `addr_of!` only
-                    // computes the address.
                     cmdq_cell.set(core::ptr::addr_of!(gsp.as_ref().get_ref().cmdq));
                     let info = gsp.boot(pdev, bar, chipset, gsp_falcon, sec2_falcon)?;
 
@@ -418,6 +409,9 @@ impl Gpu {
                 },
 
                 _fwctl_reg <- {
+                    // SAFETY: `devres_bar` is a valid `Devres<Bar0>` and `cmdq_cell`
+                    // holds a pointer to a pinned `cmdq` that outlives this fwctl
+                    // registration (torn down by `Devres` before `Gsp` is dropped).
                     let fwctl_data = unsafe {
                         crate::fwctl::NovaCoreFwCtlData::new(
                             devres_bar.clone(),
@@ -472,7 +466,10 @@ impl Gpu {
         crate::mm::pramin::run_self_test(pdev.as_ref(), self.mm.pramin(), self.spec.chipset)?;
 
         // BAR1 self-tests.
-        let bar1 = Arc::pin_init(pdev.iomap_region_sized::<BAR1_SIZE>(2, c"nova-core/bar1"), GFP_KERNEL)?;
+        let bar1 = Arc::pin_init(
+            pdev.iomap_region_sized::<BAR1_SIZE>(2, c"nova-core/bar1"),
+            GFP_KERNEL,
+        )?;
         let bar1_access = bar1.access(pdev.as_ref())?;
 
         crate::mm::bar_user::run_self_test(

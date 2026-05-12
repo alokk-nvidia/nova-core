@@ -166,10 +166,12 @@ impl<T: Operations> Device<T> {
         }
 
         // CAST: Device<T> is repr(C) with fwctl_device at offset 0.
-        let this = raw as *mut Self;
+        let this = raw.cast::<Self>();
 
         // SAFETY: `data` field is within the kzalloc'd allocation, uninitialised.
         let data_ptr = unsafe { core::ptr::addr_of_mut!((*this).data) };
+        // SAFETY: `data_ptr` points to uninitialised, properly aligned memory
+        // for `T::DeviceData` within the kzalloc'd allocation.
         unsafe { data.__pinned_init(data_ptr) }.inspect_err(|_| {
             // SAFETY: Init failed; release the allocation.
             unsafe { bindings::fwctl_put(raw) };
@@ -177,7 +179,7 @@ impl<T: Operations> Device<T> {
 
         // SAFETY: `_fwctl_alloc_device` returned a valid pointer with refcount 1
         // and DeviceData is fully initialised.
-        Ok(unsafe { ARef::from_raw(NonNull::new_unchecked(raw as *mut Self)) })
+        Ok(unsafe { ARef::from_raw(NonNull::new_unchecked(raw.cast::<Self>())) })
     }
 
     /// Returns a reference to the embedded driver data.
@@ -193,6 +195,8 @@ impl<T: Operations> Device<T> {
     ///
     /// `ptr` must point to a valid `fwctl_device` embedded in a `Device<T>`.
     unsafe fn from_raw<'a>(ptr: *mut bindings::fwctl_device) -> &'a Self {
+        // SAFETY: Caller guarantees `ptr` points to a valid `fwctl_device`
+        // embedded at offset 0 in a `Device<T>` (repr(C)).
         unsafe { &*ptr.cast() }
     }
 
@@ -204,6 +208,8 @@ impl<T: Operations> Device<T> {
     pub fn parent(&self) -> &device::Device<device::Bound> {
         // SAFETY: fwctl_device always has a valid parent.
         let parent_dev = unsafe { (*self.as_raw()).dev.parent };
+        // SAFETY: `parent_dev` is set by the C subsystem and always points to
+        // a valid `struct device` that outlives the fwctl_device.
         let dev: &device::Device = unsafe { device::Device::from_raw(parent_dev) };
         // SAFETY: The parent is guaranteed to be bound while fwctl ops are active.
         unsafe { dev.as_bound() }
@@ -322,6 +328,8 @@ impl<T: Operations> UserCtx<T> {
     ///
     /// `ptr` must point to a `fwctl_uctx` embedded in a live `UserCtx<T>`.
     unsafe fn from_raw<'a>(ptr: *mut bindings::fwctl_uctx) -> &'a Self {
+        // SAFETY: Caller guarantees `ptr` points to a `fwctl_uctx` embedded
+        // in a live `UserCtx<T>` at field offset `fwctl_uctx`.
         unsafe { &*container_of!(Opaque::cast_from(ptr), Self, fwctl_uctx) }
     }
 
@@ -330,6 +338,8 @@ impl<T: Operations> UserCtx<T> {
     /// `ptr` must point to a `fwctl_uctx` embedded in a live `UserCtx<T>`.
     /// The caller must ensure exclusive access to the `UserCtx<T>`.
     unsafe fn from_raw_mut<'a>(ptr: *mut bindings::fwctl_uctx) -> &'a mut Self {
+        // SAFETY: Caller guarantees `ptr` points to a `fwctl_uctx` embedded
+        // in a live `UserCtx<T>` and that exclusive access is held.
         unsafe { &mut *container_of!(Opaque::cast_from(ptr), Self, fwctl_uctx).cast_mut() }
     }
 

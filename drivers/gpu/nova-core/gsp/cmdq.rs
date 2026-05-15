@@ -49,6 +49,7 @@ use pin_init::pin_init_scope;
 use crate::{
     driver::Bar0,
     gsp::{
+        fw,
         fw::{
             GspGmcMsgElement,
             GspMsgElement,
@@ -618,8 +619,8 @@ struct GmcMessage<'a> {
 /// Returned by [`Cmdq::send_gmc_and_receive`].
 #[expect(dead_code)]
 pub(crate) struct GmcResponse {
-    /// The GMC command identifier from the response.
-    pub(crate) command_id: u32,
+    /// The 24-bit GMC command identifier from the response (flags stripped).
+    pub(crate) command: u32,
     /// Response status (`NV_STATUS` code). Zero means success.
     pub(crate) status: u32,
     /// Response payload (copied from the message queue).
@@ -883,19 +884,19 @@ impl Cmdq {
                 Err(e) => return Err(e),
             };
 
-            let command_id = msg.header.gmc.command_id;
+            let command = msg.header.gmc.command & fw::GMCAPI_COMMAND_ID_MASK;
             let (s1, s2) = msg.contents;
             let total_len = s1.len() + s2.len();
             let advance_pages =
                 u32::try_from(msg.header.length().div_ceil(GSP_PAGE_SIZE)).unwrap_or(1);
 
             let matched = if s2.is_empty() {
-                predicate(command_id, s1)
+                predicate(command, s1)
             } else {
                 let mut buf = KVec::with_capacity(total_len, GFP_KERNEL)?;
                 buf.extend_from_slice(s1, GFP_KERNEL)?;
                 buf.extend_from_slice(s2, GFP_KERNEL)?;
-                predicate(command_id, &buf)
+                predicate(command, &buf)
             };
 
             DmaGspMem::advance_cpu_read_ptr_v2(bar, advance_pages);
@@ -1077,7 +1078,7 @@ impl CmdqInner {
 
         dev_dbg!(
             &self.dev,
-            "GSP GMC: send: seq# {}, command_id=0x{:x}, length=0x{:x}\n",
+            "GSP GMC: send: seq# {}, command=0x{:x}, length=0x{:x}\n",
             self.seq,
             command_id,
             dst.header.length(),
@@ -1344,10 +1345,10 @@ impl CmdqInner {
 
         dev_dbg!(
             &self.dev,
-            "GSP GMC: response received: seq {}, command_id=0x{:x}, status=0x{:x}, length=0x{:x}\n",
+            "GSP GMC: response received: seq {}, command=0x{:x}, status=0x{:x}, length=0x{:x}\n",
             message.header.gmc.sequence,
-            message.header.gmc.command_id,
-            message.header.gmc.size_or_status,
+            message.header.gmc.command,
+            message.header.gmc.max_resp_or_status,
             message.header.length(),
         );
 
@@ -1357,8 +1358,8 @@ impl CmdqInner {
         payload.extend_from_slice(message.contents.1, GFP_KERNEL)?;
 
         let response = GmcResponse {
-            command_id: message.header.gmc.command_id,
-            status: message.header.gmc.size_or_status,
+            command: message.header.gmc.command & fw::GMCAPI_COMMAND_ID_MASK,
+            status: message.header.gmc.max_resp_or_status,
             payload,
         };
 
@@ -1387,19 +1388,19 @@ impl CmdqInner {
         handler: impl FnOnce(u32, u32, &[u8], &[u8]) -> R,
     ) -> Result<R> {
         let message = self.wait_for_gmc_msg(bar, timeout)?;
-        let command_id = message.header.gmc.command_id;
-        let status = message.header.gmc.size_or_status;
+        let command = message.header.gmc.command & fw::GMCAPI_COMMAND_ID_MASK;
+        let status = message.header.gmc.max_resp_or_status;
 
         dev_dbg!(
             &self.dev,
-            "GSP GMC: event received: seq {}, command_id=0x{:x}, status=0x{:x}, length=0x{:x}\n",
+            "GSP GMC: event received: seq {}, command=0x{:x}, status=0x{:x}, length=0x{:x}\n",
             message.header.gmc.sequence,
-            command_id,
+            command,
             status,
             message.header.length(),
         );
 
-        let result = handler(command_id, status, message.contents.0, message.contents.1);
+        let result = handler(command, status, message.contents.0, message.contents.1);
 
         DmaGspMem::advance_cpu_read_ptr_v2(
             bar,

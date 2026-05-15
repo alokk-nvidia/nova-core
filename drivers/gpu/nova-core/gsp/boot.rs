@@ -70,13 +70,14 @@ const GSP_LOCKDOWN_MASK: u32 = 0xffffff00;
 /// GMC command id for the `LOAD_EXEC_GENERIC_BOOTLOADER` boot event.
 ///
 /// Matches `GMCAPI_COMMANDS_GMCAPI_CMD_EXEC_GENERIC_BOOTLOADER` in the
-/// r000 bindings.
-const CMD_EXEC_GENERIC_BOOTLOADER: u32 = 0x0001_F001;
+/// r000 bindings.  Category GSP_MGMT (0x01), index 0x0002.
+const CMD_EXEC_GENERIC_BOOTLOADER: u32 = 0x0001_0002;
 
 /// GMC command id for the `LOAD_EXEC_HS_BINARY` boot event.
 ///
 /// Matches `GMCAPI_COMMANDS_GMCAPI_CMD_EXEC_HS_BINARY` in the r000 bindings.
-const CMD_EXEC_HS_BINARY: u32 = 0x0001_F002;
+/// Category GSP_MGMT (0x01), index 0x0003.
+const CMD_EXEC_HS_BINARY: u32 = 0x0001_0003;
 
 /// GSP falcon mailbox state, used to track lockdown release status.
 struct GspMbox {

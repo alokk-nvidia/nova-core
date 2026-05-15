@@ -20,7 +20,7 @@ pub(crate) mod vgpu_prop_keys {
     pub(crate) const FB_RESERVATION: u16 = 0x310F;
 }
 
-/// GMCAPI command IDs for vGPU management.
+/// GMCAPI command IDs for vGPU management (category VGPU_MGMT = 0x02).
 pub(crate) mod gmcapi {
     pub(crate) const VGPU_MGMT_ADD_TYPE: u32 = 0x1000_0001;
     pub(crate) const VGPU_MGMT_QUERY_SUPPORTED: u32 = 0x1000_0002;

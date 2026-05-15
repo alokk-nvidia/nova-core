@@ -652,32 +652,36 @@ unsafe impl FromBytes for GspMsgElement {}
 
 /// GMC API message header.
 ///
-/// Matches the `GMCAPI_HEADER` struct from Open RM (`gmcapi_base.h`). The two
-/// middle `u32` fields form a union in C: for requests they carry `size` and
-/// `max_response_size`, for responses they carry `status` and `size`.
+/// Matches the `GMCAPI_HEADER` struct from Open RM (`gmcapi_base.h`).
+/// The `command` field carries flags in the high byte and a 24-bit command ID
+/// in the low 24 bits.  `size` is the payload size for both requests and
+/// responses.  The union at offset 16 holds `max_response_size` (request) or
+/// `status` (response).
 ///
 /// Open RM reference: `interface/gmcapi/gmcapi_base.h`
 #[repr(C)]
 #[derive(Zeroable)]
 pub(crate) struct GmcApiHeader {
-    /// GMC command identifier (from `GMCAPI_COMMANDS`).
-    pub(crate) command_id: u32,
-    reserved1: u32,
+    /// GMC command identifier with flags in high byte.
+    pub(crate) command: u32,
+    /// Payload size in bytes (request and response).
+    pub(crate) size: u32,
     /// Sequence number for matching requests to responses.
     pub(crate) sequence: u64,
-    /// Request: payload size in bytes. Response: `NV_STATUS` code.
-    pub(crate) size_or_status: u32,
-    /// Request: maximum response size. Response: actual response size.
-    pub(crate) max_resp_or_resp_size: u32,
-    reserved2: u64,
+    /// Request: maximum response size. Response: `NV_STATUS` code.
+    pub(crate) max_resp_or_status: u32,
+    reserved: [u32; 5],
 }
 
-static_assert!(size_of::<GmcApiHeader>() == 32);
-static_assert!(core::mem::offset_of!(GmcApiHeader, command_id) == 0);
+/// Mask to extract the 24-bit command ID from `GmcApiHeader::command`.
+pub(crate) const GMCAPI_COMMAND_ID_MASK: u32 = 0x00FF_FFFF;
+
+static_assert!(size_of::<GmcApiHeader>() == 40);
+static_assert!(core::mem::offset_of!(GmcApiHeader, command) == 0);
+static_assert!(core::mem::offset_of!(GmcApiHeader, size) == 4);
 static_assert!(core::mem::offset_of!(GmcApiHeader, sequence) == 8);
-static_assert!(core::mem::offset_of!(GmcApiHeader, size_or_status) == 16);
-static_assert!(core::mem::offset_of!(GmcApiHeader, max_resp_or_resp_size) == 20);
-static_assert!(core::mem::offset_of!(GmcApiHeader, reserved2) == 24);
+static_assert!(core::mem::offset_of!(GmcApiHeader, max_resp_or_status) == 16);
+static_assert!(core::mem::offset_of!(GmcApiHeader, reserved) == 20);
 
 // SAFETY: All fields are integer types with no uninitialized padding bytes.
 unsafe impl AsBytes for GmcApiHeader {}
@@ -731,7 +735,7 @@ impl GspGmcMsgElement {
     /// Creates a new GMC message element.
     ///
     /// `payload_size` is the size of the command payload following this header.
-    /// `command_id` is the GMC command identifier.
+    /// `command_id` is the GMC command identifier (24-bit, no flags).
     /// `sequence` is the sequence number for request/response matching.
     /// `max_response_size` is the maximum expected response payload size.
     pub(crate) fn init(
@@ -750,12 +754,11 @@ impl GspGmcMsgElement {
             nvdm_payload_size: (size_of::<GmcApiHeader>() + payload_size) as u32,
             reserved: 0u32,
             gmc: GmcApiHeader {
-                command_id,
-                reserved1: 0,
+                command: command_id,
+                size: payload_size as u32,
                 sequence,
-                size_or_status: payload_size as u32,
-                max_resp_or_resp_size: max_response_size,
-                reserved2: 0,
+                max_resp_or_status: max_response_size,
+                reserved: [0; 5],
             },
         })
     }

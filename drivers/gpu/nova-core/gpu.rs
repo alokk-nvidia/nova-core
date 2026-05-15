@@ -317,7 +317,8 @@ impl fmt::Display for Spec {
 /// Structure holding the resources required to operate the GPU.
 #[pin_data]
 pub(crate) struct Gpu {
-    spec: Spec,
+    pub(crate) spec: Spec,
+    pub(crate) build_id: Option<firmware::BuildId>,
     /// MMIO mapping of PCI BAR 0
     pub(crate) bar: Arc<Devres<Bar0>>,
     /// System memory page required for flushing all pending GPU-side memory writes done through
@@ -516,6 +517,7 @@ impl Gpu {
 
                 bar: devres_bar,
                 spec,
+                build_id,
             }))
         })
     }

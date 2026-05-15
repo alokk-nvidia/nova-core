@@ -115,7 +115,7 @@ impl<const NUM_PAGES: usize> PteArray<NUM_PAGES> {
 /// This header makes each dump self-describing so that decoding tools can
 /// identify the firmware build, GPU architecture, and metadata format without
 /// out-of-band information.
-const LOG_BUFFER_HEADER_SIZE: usize = 0x48;
+pub(crate) const LOG_BUFFER_HEADER_SIZE: usize = 0x48;
 
 /// Build a log buffer header from GPU and firmware metadata.
 ///
@@ -129,7 +129,7 @@ const LOG_BUFFER_HEADER_SIZE: usize = 0x48;
 ///   0x20  buildId[32]
 ///   0x40  flags (u32) = 1 (packed metadata)
 ///   0x44  reserved (u32) = 0
-fn build_log_buffer_header(
+pub(crate) fn build_log_buffer_header(
     chipset: Chipset,
     build_id: &BuildId,
     task_prefix: &str,

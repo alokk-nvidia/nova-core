@@ -4,6 +4,7 @@ pub(crate) mod bootload;
 mod chan;
 pub(crate) mod consts;
 mod instance;
+pub(crate) mod log;
 mod mm;
 pub(crate) mod plugin_rpc;
 pub(crate) mod scrubber;

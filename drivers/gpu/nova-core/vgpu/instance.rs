@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0
 
 use kernel::{
+    debugfs,
     device,
     devres::Devres,
     prelude::*,
+    str::CString,
     sync::{
         Arc,
         Mutex, //
@@ -15,6 +17,8 @@ use crate::{
         Bar0,
         Bar1, //
     },
+    firmware::BuildId,
+    gpu::Chipset,
     gsp::{
         cmdq::Cmdq,
         nvkv, //
@@ -33,6 +37,7 @@ use crate::{
             gmcapi,
             vgpu_prop_keys, //
         },
+        log::VgpuLogBuffers,
         plugin_rpc::PluginRpc,
         scrubber,
         Bar1Map,
@@ -96,6 +101,10 @@ impl Default for VgpuType {
 }
 
 /// A live vGPU instance with allocated resources.
+///
+/// Field ordering is load-bearing for drop: `debugfs_logs` must be declared
+/// before `plugin_rpc` so that debugfs entries are removed (and in-progress
+/// readers drained) before the underlying `Bar1Map` is destroyed.
 pub(crate) struct VgpuInstance {
     #[expect(dead_code)]
     pub id: i32,
@@ -112,6 +121,7 @@ pub(crate) struct VgpuInstance {
     pub sema_phys_addr: u64,
     pub fbmem_heap: Option<VramBlock>,
     pub mgmt_heap: Option<VramBlock>,
+    pub debugfs_logs: Option<Pin<KBox<debugfs::Scope<VgpuLogBuffers>>>>,
     pub plugin_rpc: Option<PluginRpc>,
     pub active: bool,
 }
@@ -184,6 +194,8 @@ impl VgpuManager {
         dbdf: Dbdf,
         vgpu_type: VgpuType,
         vm_pid: u32,
+        chipset: Chipset,
+        build_id: Option<&BuildId>,
     ) -> Result<VgpuInstance> {
         pr_debug!(
             "allocate_instance: gfid={} dbdf={:#x} vgpu type id={} vm_pid={}\n",
@@ -229,7 +241,32 @@ impl VgpuManager {
         );
 
         let bar1_map = Bar1Map::new(bar_user, bar1, dev, mm, mgmt.addr, mgmt.size)?;
+
+        let log_buffers = VgpuLogBuffers::new(&bar1_map, chipset, build_id);
+
         let plugin_rpc = PluginRpc::new(bar1_map);
+
+        let domain = dbdf.0 >> 16;
+        let bus = (dbdf.0 >> 8) & 0xFF;
+        let devno = (dbdf.0 >> 3) & 0x1F;
+        let func = dbdf.0 & 0x07;
+        let dir_name = CString::try_from_fmt(fmt!(
+            "{:04x}:{:02x}:{:02x}.{:x}-vgpu",
+            domain, bus, devno, func
+        ))?;
+
+        #[allow(static_mut_refs)]
+        // SAFETY: `DEBUGFS_ROOT` is set before driver registration and cleared
+        // after driver unregistration.
+        let debugfs_root: &debugfs::Dir = unsafe { crate::DEBUGFS_ROOT.as_ref() }
+            .expect("DEBUGFS_ROOT not initialized");
+
+        let debugfs_logs = KBox::pin_init(
+            debugfs_root.scope(log_buffers, &dir_name, |logs, dir| {
+                VgpuLogBuffers::register_debugfs(logs, dir);
+            }),
+            GFP_KERNEL,
+        )?;
 
         Ok(VgpuInstance {
             id: self.next_id(),
@@ -244,6 +281,7 @@ impl VgpuManager {
             sema_phys_addr: 0,
             fbmem_heap: Some(fbmem),
             mgmt_heap: Some(mgmt),
+            debugfs_logs: Some(debugfs_logs),
             plugin_rpc: Some(plugin_rpc),
             active: false,
         })

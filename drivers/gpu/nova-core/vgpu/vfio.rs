@@ -84,6 +84,7 @@ fn nvidia_vgpu_open_inner(
         let mut chids = gpu.chid_allocator.lock();
         let inst = mgr.allocate_instance(
             dev, &gpu.mm, &gpu.bar_user, bar1, &mut chids, gfid, dbdf, vgpu_type, 0,
+            gpu.spec.chipset(), gpu.build_id.as_ref(),
         )?;
         let masks = mgr.engine_masks;
         (inst, masks)

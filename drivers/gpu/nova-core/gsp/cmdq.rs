@@ -790,14 +790,18 @@ impl Cmdq {
             .send_gmc(bar, command_id, payload, max_response_size)
     }
 
-    /// Sends a GMC API command to the GSP and waits for the response.
+    /// Sends a GMC API command to the GSP and waits for the matching response.
     ///
-    /// The queue is locked for the entire send+receive cycle.
+    /// The queue is locked for the entire send+receive cycle. Messages whose
+    /// command ID does not match `command_id` (after masking flags) are consumed
+    /// and discarded — this prevents stale responses from earlier fire-and-forget
+    /// commands from being misattributed.
     ///
     /// # Errors
     ///
     /// - `EMSGSIZE` if the command exceeds the maximum queue element size.
-    /// - `ETIMEDOUT` if space is not available or the response is not received in time.
+    /// - `ETIMEDOUT` if space is not available or the matching response is not
+    ///   received in time.
     /// - `ENOMEM` if the response payload buffer cannot be allocated.
     pub(crate) fn send_gmc_and_receive(
         &self,
@@ -808,7 +812,19 @@ impl Cmdq {
     ) -> Result<GmcResponse> {
         let mut inner = self.inner.lock();
         inner.send_gmc(bar, command_id, payload, max_response_size)?;
-        inner.receive_gmc(bar, Self::RECEIVE_TIMEOUT)
+
+        let expected = command_id & fw::GMCAPI_COMMAND_ID_MASK;
+        loop {
+            let resp = inner.receive_gmc(bar, Self::RECEIVE_TIMEOUT)?;
+            if resp.command == expected {
+                break Ok(resp);
+            }
+            dev_dbg!(
+                &inner.dev,
+                "GSP GMC: skipped non-matching response cmd={:#x} while waiting for {:#x}\n",
+                resp.command, expected,
+            );
+        }
     }
 
     /// Send a GMC command and check the response status, ignoring the payload.

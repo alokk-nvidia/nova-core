@@ -6,6 +6,7 @@ pub(crate) mod consts;
 mod instance;
 mod mm;
 pub(crate) mod plugin_rpc;
+pub(crate) mod scrubber;
 mod vfio;
 
 pub(crate) use self::chan::ChidAllocator;

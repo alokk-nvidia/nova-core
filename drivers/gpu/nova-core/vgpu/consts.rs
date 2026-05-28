@@ -33,6 +33,10 @@ pub(crate) mod gmcapi {
     pub(crate) const VGPU_SHUTDOWN: u32 = 0x1000_0021;
     pub(crate) const VGPU_SHUTDOWN_COMPLETE: u32 = 0x1000_0022;
     pub(crate) const VGPU_CLEANUP: u32 = 0x1000_0023;
+
+    pub(crate) const VGPU_MGR_SCRUB_GUEST_FB: u32 = 0x1000_0025;
+    pub(crate) const VGPU_MGR_ALLOC_GSP_CEUTILS: u32 = 0x1000_0026;
+    pub(crate) const VGPU_MGR_FREE_GSP_CEUTILS: u32 = 0x1000_0027;
 }
 
 /// NVKV key constants for VGPU_BOOTLOAD command encoding.

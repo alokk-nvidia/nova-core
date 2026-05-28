@@ -230,7 +230,7 @@ impl PluginRpc {
         )?;
         nvkv::nvkv_push_imm32(&mut kvs, config_keys::VM_PID, instance.vm_pid)?;
         nvkv::nvkv_push_imm32(&mut kvs, config_keys::SWIZZ_ID, config_keys::SWIZZ_ID_NONE)?;
-        nvkv::nvkv_push_imm32(&mut kvs, config_keys::NUM_CHANNELS, instance.num_chid)?;
+        nvkv::nvkv_push_imm32(&mut kvs, config_keys::NUM_CHANNELS, instance.num_chid - 1)?;
         nvkv::nvkv_push_imm32(
             &mut kvs,
             config_keys::NUM_PLUGIN_CHANNELS,

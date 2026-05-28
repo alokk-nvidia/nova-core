@@ -16,6 +16,7 @@ use crate::{
         instance::VgpuType,
         query_assigned_vf_type,
         query_vgpu_type,
+        scrubber,
         Dbdf,
         Gfid, //
     },
@@ -91,6 +92,42 @@ fn nvidia_vgpu_open_inner(
     pr_debug!("vgpu_open: gfid={} instance allocated, chid_offset={}\n",
         gfid.0, instance.chid_offset);
 
+    // Phase 1.5: allocate per-VM CeUtils and scrub guest FB before bootload.
+    let (sema_phys, _sema_aperture) =
+        scrubber::alloc_ceutils(cmdq, bar, gfid, instance.ceutils_chid, 0)?;
+    instance.sema_phys_addr = sema_phys;
+    pr_debug!(
+        "vgpu_open: gfid={} ceutils sema_phys={:#x}\n",
+        gfid.0, sema_phys
+    );
+
+    if let Some(fb) = instance.fbmem_heap.as_ref() {
+        if let Err(e) = scrubber::write_magic(
+            &gpu.bar_user, bar1, dev, &gpu.mm, fb.addr, fb.size,
+        ) {
+            pr_warn!("vgpu_open: gfid={} write_magic failed: {:?}\n", gfid.0, e);
+        }
+
+        match scrubber::scrub_guest_fb(cmdq, bar, gfid, fb.addr, fb.size) {
+            Ok(work_id) => {
+                if let Err(e) = scrubber::wait_scrub_complete(
+                    &gpu.bar_user, bar1, dev, &gpu.mm, sema_phys, work_id,
+                ) {
+                    pr_warn!("vgpu_open: gfid={} wait_scrub timed out: {:?}\n", gfid.0, e);
+                }
+            }
+            Err(e) => {
+                pr_warn!("vgpu_open: gfid={} pre-boot scrub failed: {:?}\n", gfid.0, e);
+            }
+        }
+
+        if let Err(e) = scrubber::verify_scrub(
+            &gpu.bar_user, bar1, dev, &gpu.mm, fb.addr, fb.size,
+        ) {
+            pr_warn!("vgpu_open: gfid={} verify_scrub failed: {:?}\n", gfid.0, e);
+        }
+    }
+
     // Phase 2: bootload + RPC negotiation (no locks held).
     activate_instance(dev, cmdq, bar, &mut instance, &engine_masks)?;
 
@@ -110,10 +147,13 @@ fn nvidia_vgpu_close_inner(pf_pdev: *mut kernel::bindings::pci_dev, gfid: u32) -
 
     let bar = gpu.bar.access(dev)?;
     let cmdq = &gpu.gsp.cmdq;
+    let bar1 = gpu.bar1.as_ref().ok_or(ENODEV)?;
     let mut mgr = gpu.vgpu.lock();
     let mut chids = gpu.chid_allocator.lock();
 
-    let result = mgr.destroy_instance(dev, &gpu.mm, cmdq, bar, &mut chids, gfid);
+    let result = mgr.destroy_instance(
+        dev, &gpu.mm, cmdq, bar, &gpu.bar_user, bar1, &mut chids, gfid,
+    );
     pr_debug!("vgpu_close: gfid={} result={:?}\n", gfid.0, result);
     result
 }
@@ -135,9 +175,28 @@ fn nvidia_vgpu_reset_inner(pf_pdev: *mut kernel::bindings::pci_dev, gfid: u32) -
         .ok_or(ENOENT)?;
 
     let plugin_rpc = instance.plugin_rpc.as_mut().ok_or(EINVAL)?;
-    let result = plugin_rpc.rpc_call(dev, bar, gfid, RpcMsg::Reset, &[]);
-    pr_debug!("vgpu_reset: gfid={} result={:?}\n", gfid.0, result);
-    result
+    plugin_rpc.rpc_call(dev, bar, gfid, RpcMsg::Reset, &[])?;
+
+    if let Some(fb) = instance.fbmem_heap.as_ref() {
+        let cmdq = &gpu.gsp.cmdq;
+        let sema_phys = instance.sema_phys_addr;
+        match scrubber::scrub_guest_fb(cmdq, bar, gfid, fb.addr, fb.size) {
+            Ok(work_id) => {
+                let bar1 = gpu.bar1.as_ref().ok_or(ENODEV)?;
+                if let Err(e) = scrubber::wait_scrub_complete(
+                    &gpu.bar_user, bar1, dev, &gpu.mm, sema_phys, work_id,
+                ) {
+                    pr_warn!("vgpu_reset: gfid={} wait_scrub timed out: {:?}\n", gfid.0, e);
+                }
+            }
+            Err(e) => {
+                pr_warn!("vgpu_reset: gfid={} scrub failed: {:?}\n", gfid.0, e);
+            }
+        }
+    }
+
+    pr_debug!("vgpu_reset: gfid={} done\n", gfid.0);
+    Ok(())
 }
 
 /// # Safety

@@ -499,6 +499,8 @@ impl<'cmdq> Cmdq<'cmdq> {
                     dev,
                     gsp_mem,
                     seq: 0,
+                    tx_async_seq: 0,
+                    rx_event_seq: 0,
                 }),
             }))
         })
@@ -525,6 +527,10 @@ struct CmdqInner<'a> {
     dev: &'a device::Device,
     /// Current command sequence number.
     seq: u32,
+    /// Debug-log sequence for RPC commands sent without waiting for a reply.
+    tx_async_seq: u32,
+    /// Debug-log sequence for GSP-initiated RPC events, whose wire sequence may be unset.
+    rx_event_seq: u32,
     /// Memory area shared with the GSP for communicating commands and messages.
     gsp_mem: DmaGspMem<'a>,
 }
@@ -669,9 +675,11 @@ impl CmdqInner<'_> {
 
         // The NVDM type of the queue element header selects the message header that follows.
         let message = match message.header.nvdm_type() {
-            Ok(NvdmType::RmRpc) => {
-                GspParsedMessage::Rpc(rpc::RpcMessage::parse(self.dev, message)?)
-            }
+            Ok(NvdmType::RmRpc) => GspParsedMessage::Rpc(rpc::RpcMessage::parse(
+                self.dev,
+                message,
+                self.rx_event_seq,
+            )?),
             Ok(NvdmType::GmcApi) => {
                 GspParsedMessage::Gmc(gmc::GmcMessage::parse(self.dev, message)?)
             }
@@ -685,10 +693,14 @@ impl CmdqInner<'_> {
             }
         };
 
+        let rpc_event = matches!(&message, GspParsedMessage::Rpc(rpc) if rpc.is_event());
         let res = f(message);
 
         // Advance the read pointer past this message.
         self.gsp_mem.advance_cpu_read_ptr(elem_count);
+        if rpc_event {
+            self.rx_event_seq = self.rx_event_seq.wrapping_add(1);
+        }
 
         Ok(res)
     }

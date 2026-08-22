@@ -118,7 +118,7 @@ where
         size_of::<RpcMessageHeader>() + self.0.size()
     }
 
-    fn write(&self, dev: &device::Device, seq: u32, dst: &mut GspCommand<'_>) -> Result {
+    fn write(&self, _dev: &device::Device, seq: u32, dst: &mut GspCommand<'_>) -> Result {
         let command = &self.0;
         let size_in_bytes = command.size();
         // Extract the areas for the RPC header and the command itself. The queue element header,
@@ -144,14 +144,6 @@ where
         if !sbuffer.is_empty() {
             return Err(EIO);
         }
-
-        dev_dbg!(
-            dev,
-            "GSP RPC: send: seq# {}, function={:?}, length=0x{:x}\n",
-            seq,
-            M::FUNCTION,
-            size_in_bytes,
-        );
 
         Ok(())
     }
@@ -199,7 +191,11 @@ impl<'a> RpcMessage<'a> {
     ///
     /// - `EIO` if the element is shorter than the RPC header, or than the payload length
     ///   advertised by the RPC header.
-    pub(super) fn parse(dev: &device::Device, element: GspMessage<'a>) -> Result<RpcMessage<'a>> {
+    pub(super) fn parse(
+        dev: &device::Device,
+        element: GspMessage<'a>,
+        event_seq: u32,
+    ) -> Result<RpcMessage<'a>> {
         let GspMessage {
             contents: (slice_1, slice_2),
             ..
@@ -210,13 +206,27 @@ impl<'a> RpcMessage<'a> {
         let (rpc_header, slice_1) = RpcMessageHeader::from_bytes_prefix(slice_1).ok_or(EIO)?;
         let payload_length = rpc_header.rpc_length();
 
-        dev_dbg!(
-            dev,
-            "GSP RPC: receive: seq# {}, function={:?}, length=0x{:x}\n",
-            rpc_header.sequence(),
-            rpc_header.function(),
-            payload_length,
-        );
+        match rpc_header.function() {
+            Ok(function) if function.is_event() => {
+                dev_dbg!(
+                    dev,
+                    "GSP RPC: async received: seq# {}, function={:?}, length=0x{:x}\n",
+                    event_seq,
+                    function,
+                    payload_length,
+                );
+            }
+            Ok(function) => {
+                dev_dbg!(
+                    dev,
+                    "GSP RPC: response received: seq# {}, function={:?}, length=0x{:x}\n",
+                    rpc_header.sequence(),
+                    function,
+                    payload_length,
+                );
+            }
+            Err(_) => {}
+        }
 
         // Check that the driver read area is large enough for the message.
         if slice_1.len() + slice_2.len() < payload_length {
@@ -240,6 +250,11 @@ impl<'a> RpcMessage<'a> {
             header: rpc_header,
             contents: (slice_1, slice_2),
         })
+    }
+
+    /// Returns whether this message is a GSP-initiated event rather than a command reply.
+    pub(super) fn is_event(&self) -> bool {
+        matches!(self.header.function(), Ok(function) if function.is_event())
     }
 
     /// Logs an event, meaning a message that no caller was waiting for.
@@ -297,7 +312,7 @@ impl Cmdq<'_> {
         Error: From<<M::Reply as MessageFromGsp>::InitError>,
     {
         let mut inner = self.inner.lock();
-        let seq = inner.send_rpc_command(command)?;
+        let seq = inner.send_rpc_command(command, false)?;
 
         inner.await_rpc_msg(Some(seq))
     }
@@ -316,7 +331,7 @@ impl Cmdq<'_> {
         M: CommandToGsp<Reply = NoReply>,
         Error: From<M::InitError>,
     {
-        self.inner.lock().send_rpc_command(command).map(|_| ())
+        self.inner.lock().send_rpc_command(command, true).map(|_| ())
     }
 
     /// Waits for an unsolicited GSP event of type `M`. Events that arrive before it are logged and
@@ -344,11 +359,45 @@ impl Cmdq<'_> {
 }
 
 impl CmdqInner<'_> {
+    /// Sends one RPC element and writes its synchronous or asynchronous send log.
+    ///
+    /// `is_async` only selects the log label and counter. The RPC header always uses the sequence
+    /// supplied by the transport, and that sequence is returned to the caller unchanged.
+    fn send_rpc_command_element<M>(&mut self, command: M, is_async: bool) -> Result<u32>
+    where
+        M: CommandToGsp,
+        Error: From<M::InitError>,
+    {
+        let payload_size = command.size();
+        let seq = self.send_command_element(RpcCommandElement(command))?;
+
+        if is_async {
+            dev_dbg!(
+                self.dev,
+                "GSP RPC: async send: seq# {}, function={:?}, length=0x{:x}\n",
+                self.tx_async_seq,
+                M::FUNCTION,
+                payload_size,
+            );
+            self.tx_async_seq = self.tx_async_seq.wrapping_add(1);
+        } else {
+            dev_dbg!(
+                self.dev,
+                "GSP RPC: send: seq# {}, function={:?}, length=0x{:x}\n",
+                seq,
+                M::FUNCTION,
+                payload_size,
+            );
+        }
+
+        Ok(seq)
+    }
+
     /// Sends `command` to the GSP, and returns the sequence number of its first element.
     ///
     /// The command may be split into multiple messages if it is large. Each message carries its
     /// own sequence number, and GSP-RM copies the one of the first message into its reply, as it
-    /// does for OpenRM's large RPCs.
+    /// does for OpenRM's large RPCs. `is_async` classifies only the first element's send log.
     ///
     /// # Errors
     ///
@@ -357,18 +406,22 @@ impl CmdqInner<'_> {
     ///   written to by its [`CommandToGsp::init_variable_payload`] method.
     ///
     /// Error codes returned by the command initializers are propagated as-is.
-    fn send_rpc_command<M>(&mut self, command: M) -> Result<u32>
+    fn send_rpc_command<M>(&mut self, command: M, is_async: bool) -> Result<u32>
     where
         M: CommandToGsp,
         Error: From<M::InitError>,
     {
         match SplitState::new(command)? {
-            SplitState::Single(command) => self.send_command_element(RpcCommandElement(command)),
+            SplitState::Single(command) => self.send_rpc_command_element(command, is_async),
             SplitState::Split(command, mut continuations) => {
-                let seq = self.send_command_element(RpcCommandElement(command))?;
+                let seq = self.send_rpc_command_element(command, is_async)?;
 
                 while let Some(continuation) = continuations.next() {
-                    self.send_command_element(RpcCommandElement(continuation))?;
+                    // A continuation record is not an independent asynchronous command.
+                    self.send_rpc_command_element::<continuation::ContinuationRecord<'_>>(
+                        continuation,
+                        false,
+                    )?;
                 }
 
                 Ok(seq)

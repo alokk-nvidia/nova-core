@@ -34,9 +34,9 @@ mod regs;
 pub(crate) use fw::{
     r000_00 as bindings,
     GspFmcBootParams,
+    GspFwHeapParams,
     GspFwWprMeta,
-    LibosMemoryRegionInitArgument,
-    LibosParams, //
+    LibosMemoryRegionInitArgument, //
 };
 pub(crate) use hal::boot_firmware_files;
 

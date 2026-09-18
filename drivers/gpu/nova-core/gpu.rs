@@ -250,11 +250,16 @@ impl fmt::Display for Revision {
     }
 }
 
-/// Structure holding a basic description of the GPU: `Chipset` and `Revision`.
+/// Structure holding a basic description of the GPU: `Chipset`, the implementation field of
+/// `NV_PMC_BOOT_42`, and `Revision`.
 #[derive(Clone, Copy)]
 pub struct Spec {
     /// The GPU chipset.
     pub chipset: Chipset,
+    /// Implementation field of `NV_PMC_BOOT_42`, which distinguishes this chipset from the other
+    /// chipsets of its architecture.
+    #[expect(dead_code)]
+    pub(crate) implementation: u8,
     revision: Revision,
 }
 
@@ -297,6 +302,7 @@ impl TryFrom<regs::NV_PMC_BOOT_42> for Spec {
     fn try_from(boot42: regs::NV_PMC_BOOT_42) -> Result<Self> {
         Ok(Self {
             chipset: boot42.chipset()?,
+            implementation: boot42.implementation().into(),
             revision: boot42.into(),
         })
     }

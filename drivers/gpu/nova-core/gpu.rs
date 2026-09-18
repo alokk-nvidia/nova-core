@@ -258,7 +258,6 @@ pub struct Spec {
     pub chipset: Chipset,
     /// Implementation field of `NV_PMC_BOOT_42`, which distinguishes this chipset from the other
     /// chipsets of its architecture.
-    #[expect(dead_code)]
     pub(crate) implementation: u8,
     revision: Revision,
 }
@@ -509,7 +508,7 @@ impl<'gpu> Gpu<'gpu> {
 
                 vgpu: VgpuManager::new(pdev, spec.chipset, fsp.as_mut()),
 
-                gsp <- Gsp::new(pdev, bar),
+                gsp <- Gsp::new(pdev, *spec, bar),
 
                 // This member must be initialized last, so that the unload bundle can never be
                 // dropped from outside the constructed `GspResources`, and the unload sequence runs

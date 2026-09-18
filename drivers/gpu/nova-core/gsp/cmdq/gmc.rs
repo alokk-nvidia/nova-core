@@ -200,11 +200,17 @@ impl<'a> GmcMessage<'a> {
         // into a single page, so it's ok to only look at `slice_1` here.
         let (gmc_header, slice_1) = GmcApiHeader::from_bytes_prefix(slice_1).ok_or(EIO)?;
         let payload_size = gmc_header.payload_size();
+        let kind = if gmc_header.command().is_response() {
+            "response"
+        } else {
+            "event"
+        };
 
         dev_dbg!(
             dev,
-            "GSP GMC: receive: seq# {}, command={}, length=0x{:x}\n",
-            gmc_header.sequence(),
+            "GSP GMC: {}: seq# {}, command={}, length=0x{:x}\n",
+            kind,
+            gmc_header.sequence_number(),
             GmcCommand::from(gmc_header.command()),
             payload_size,
         );
@@ -258,13 +264,18 @@ impl<'a> GmcMessage<'a> {
     /// unknown command id are logged at warning level. Other events are not logged.
     pub(super) fn log(&self, dev: &device::Device) {
         let command = self.header.command();
-        let seq = self.header.sequence();
+        let seq = self.header.sequence_number();
+        let kind = if command.is_response() {
+            "response"
+        } else {
+            "event"
+        };
 
         match command.id() {
             Ok(id) if command.is_response() => {
                 dev_warn!(
                     dev,
-                    "unclaimed GSP GMC reply to {} (seq {})\n",
+                    "unclaimed GSP GMC response to {} (seq# {})\n",
                     GmcCommand::from(id),
                     seq
                 );
@@ -274,7 +285,8 @@ impl<'a> GmcMessage<'a> {
             Err(_) => {
                 dev_warn!(
                     dev,
-                    "unhandled GSP GMC command {} (seq {})\n",
+                    "unhandled GSP GMC {}: command={} (seq# {})\n",
+                    kind,
                     GmcCommand::from(command),
                     seq
                 );

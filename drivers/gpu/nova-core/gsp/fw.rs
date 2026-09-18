@@ -802,6 +802,10 @@ impl From<GmcCommandWord> for GmcCommand {
     }
 }
 
+/// First sequence number of the space that GSP-RM numbers its events from, so that an event's
+/// number cannot collide with a request's. Requests are numbered from zero.
+const GMC_EVENT_SEQUENCE_BASE: u64 = 1 << 63;
+
 /// Header of a GMC (GPU Management Controller) API message.
 ///
 /// In a queue element, it follows the [`QueueElementHeader`] and precedes the payload of the
@@ -852,6 +856,13 @@ impl GmcApiHeader {
     /// Returns the sequence number of the message.
     pub(crate) fn sequence(&self) -> u64 {
         self.inner.sequence
+    }
+
+    /// Returns the sequence number without the bit that marks an event's sequence space.
+    ///
+    /// This is for logging only. Reply matching must use [`Self::sequence`].
+    pub(crate) fn sequence_number(&self) -> u64 {
+        self.sequence() & !GMC_EVENT_SEQUENCE_BASE
     }
 
     /// Returns the size in bytes of the payload following the header.

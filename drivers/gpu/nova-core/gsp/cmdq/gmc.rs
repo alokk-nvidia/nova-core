@@ -20,6 +20,7 @@ use crate::{
         },
         fw::{
             GmcApiHeader,
+            GmcCommand,
             GmcCommandId, //
         },
     },
@@ -145,9 +146,9 @@ where
 
         dev_dbg!(
             dev,
-            "GSP GMC: send: seq# {}, command={:?}, length=0x{:x}\n",
+            "GSP GMC: send: seq# {}, command={}, length=0x{:x}\n",
             seq,
-            C::COMMAND,
+            GmcCommand::from(C::COMMAND),
             payload_size,
         );
 
@@ -202,9 +203,9 @@ impl<'a> GmcMessage<'a> {
 
         dev_dbg!(
             dev,
-            "GSP GMC: receive: seq# {}, command={:?}, length=0x{:x}\n",
+            "GSP GMC: receive: seq# {}, command={}, length=0x{:x}\n",
             gmc_header.sequence(),
-            gmc_header.command(),
+            GmcCommand::from(gmc_header.command()),
             payload_size,
         );
 
@@ -261,12 +262,22 @@ impl<'a> GmcMessage<'a> {
 
         match command.id() {
             Ok(id) if command.is_response() => {
-                dev_warn!(dev, "unclaimed GSP GMC reply to {:?} (seq {})\n", id, seq);
+                dev_warn!(
+                    dev,
+                    "unclaimed GSP GMC reply to {} (seq {})\n",
+                    GmcCommand::from(id),
+                    seq
+                );
             }
             // Nothing to do for the remaining known command ids.
             Ok(_) => {}
             Err(_) => {
-                dev_warn!(dev, "unknown GSP GMC command {:?} (seq {})\n", command, seq);
+                dev_warn!(
+                    dev,
+                    "unhandled GSP GMC command {} (seq {})\n",
+                    GmcCommand::from(command),
+                    seq
+                );
             }
         }
     }

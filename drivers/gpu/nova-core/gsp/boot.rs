@@ -50,6 +50,7 @@ use crate::{
             PowerStateLevel, //
         },
         fw::{
+            GmcCommand,
             GmcCommandId,
             GspArgumentsPadded, //
         },
@@ -92,7 +93,11 @@ impl LoadExecContext<'_, '_> {
             }
             Ok(GmcCommandId::ExecHsBinary) => self.handle_load_exec_hs_binary(event.payload()),
             _ => {
-                dev_err!(self.dev, "Unexpected GMC boot event: {:?}\n", command);
+                dev_err!(
+                    self.dev,
+                    "Unexpected GMC boot event: command={}\n",
+                    GmcCommand::from(command)
+                );
                 return Err(EINVAL);
             }
         };
@@ -100,8 +105,8 @@ impl LoadExecContext<'_, '_> {
         handled.and_then(|()| self.core_resume()).inspect_err(|e| {
             dev_err!(
                 self.dev,
-                "GMC boot event {:?} failed: {:?}\n",
-                command.id(),
+                "GMC boot event {} failed: {:?}\n",
+                GmcCommand::from(command),
                 e
             );
         })

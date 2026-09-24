@@ -83,8 +83,7 @@ impl<'a> BarUser<'a> {
 /// Borrows the [`BarUser`] managing the mapping for the lifetime of the access object.
 pub(crate) struct BarUserAccess<'a> {
     bar_user: &'a BarUser<'a>,
-    /// [`BarUserAccess::release`] [`Option::take`]s this; `Some` at
-    /// drop time means `release()` was never called.
+    /// Cleared only after PTE invalidation and its TLB flush succeed.
     mapped: Option<MappedRange>,
 }
 
@@ -92,16 +91,22 @@ pub(crate) struct BarUserAccess<'a> {
 impl BarUserAccess<'_> {
     /// Tear down the BAR1 mapping.
     pub(crate) fn release(mut self, mm: &mut GpuMm<'_>) -> Result {
-        let mapped = self.mapped.take().ok_or(EINVAL)?;
+        self.unmap(mm)
+    }
+
+    fn unmap(&mut self, mm: &mut GpuMm<'_>) -> Result {
+        let Some(mapped) = self.mapped.as_ref() else {
+            return Ok(());
+        };
         let mut vmm = self.bar_user.vmm.lock();
         vmm.unmap_pages(mm, mapped)?;
+        self.mapped = None;
         Ok(())
     }
 
     /// Returns the active mapping.
     fn mapped(&self) -> &MappedRange {
-        // `mapped` is only `None` after `take()` in `release`; hence unwrap()
-        // cannot panic here.
+        // `release` consumes the access, so no accessor can run after successful release.
         self.mapped.as_ref().unwrap()
     }
 
@@ -167,7 +172,7 @@ impl Drop for BarUserAccess<'_> {
     fn drop(&mut self) {
         if self.mapped.is_some() {
             kernel::pr_warn!(
-                "BarUserAccess dropped without calling release(). BarUser address space will leak.\n"
+                "BarUserAccess dropped with a live mapping; BAR1 VA remains reserved.\n"
             );
         }
         // The inner `MappedRange`'s own `MustUnmapGuard` will also fire,
@@ -266,19 +271,27 @@ pub(crate) fn run_self_test(
     };
 
     // Cleanup - invalidate PTE.
-    vmm.unmap_pages(mm, mapped)?;
+    vmm.unmap_pages(mm, &mapped)?;
 
     // Test 2: Two-phase prepare/execute API.
     let prepared = vmm.prepare_map(mm, 1, None)?;
     let mapped2 = vmm.execute_map(mm, prepared, &[test_pfn], true)?;
+    // An old token must not invalidate a new mapping that reused its address.
+    let repeated_unmap = vmm.unmap_pages(mm, &mapped);
     let readback = vmm.read_mapping(mm, mapped2.vfn_start)?;
-    let test2_passed = if readback == Some(test_pfn) {
+    let test2_passed = if mapped2.vfn_start == test_vfn
+        && repeated_unmap == Err(EINVAL)
+        && readback == Some(test_pfn)
+    {
         true
     } else {
-        dev_err!(dev, "MM: Test 2 FAILED - Two-phase map readback mismatch\n");
+        dev_err!(
+            dev,
+            "MM: Test 2 FAILED - Remapped page or stale-token rejection mismatch\n"
+        );
         false
     };
-    vmm.unmap_pages(mm, mapped2)?;
+    vmm.unmap_pages(mm, &mapped2)?;
 
     // Test 3: Range-constrained allocation with a hole — exercises block.size()-driven
     // BAR1 mapping. A 4K hole is punched at base+16K, then a single 32K allocation
@@ -370,7 +383,7 @@ pub(crate) fn run_self_test(
             }
         }
 
-        vmm.unmap_pages(mm, mapped)?;
+        vmm.unmap_pages(mm, &mapped)?;
     }
 
     // Verify aggregate: all returned block sizes must sum to allocation size.

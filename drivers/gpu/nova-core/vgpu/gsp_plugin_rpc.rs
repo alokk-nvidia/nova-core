@@ -19,6 +19,7 @@
 
 use kernel::{
     device,
+    num::casts::usize_as_u64,
     prelude::*,
     time::{
         delay::fsleep,
@@ -26,6 +27,7 @@ use kernel::{
         Instant,
         Monotonic, //
     },
+    transmute::AsBytes, //
 };
 
 use crate::{
@@ -103,6 +105,21 @@ impl<'map, 'gpu> PluginRpc<'map, 'gpu> {
 
         NV_VIRTUAL_FUNCTION_PRIV_DOORBELL::ring_gsp_plugin(self.bar0, self.gfid.get())?;
         self.wait_response(dev, sequence)
+    }
+
+    /// Send an NVKV stream prefixed by its word count.
+    pub(super) fn rpc_call_nvkv(
+        &mut self,
+        dev: &device::Device<device::Bound>,
+        message_type: RpcMessage,
+        encoded: &[u64],
+    ) -> Result {
+        let word_count = usize_as_u64(encoded.len());
+        let mut payload = KVec::new();
+        payload.extend_from_slice(&word_count.to_le_bytes(), GFP_KERNEL)?;
+        payload.extend_from_slice(AsBytes::as_bytes(encoded), GFP_KERNEL)?;
+
+        self.rpc_call(dev, message_type, &payload)
     }
 
     fn wait_response(&self, dev: &device::Device<device::Bound>, expected_sequence: u32) -> Result {

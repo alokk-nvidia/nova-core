@@ -170,3 +170,12 @@ pub(super) fn negotiate_plugin_version(
 ) -> Result {
     rpc.rpc_call(dev, RpcMessage::VersionNegotiation, &[])
 }
+
+/// Send an instance's encoded configuration to the GSP plugin.
+pub(super) fn send_plugin_config(
+    dev: &device::Device<device::Bound>,
+    rpc: &mut PluginRpc<'_, '_>,
+    config: &[u64],
+) -> Result {
+    rpc.rpc_call_nvkv(dev, RpcMessage::SetupConfigParamsAndInit, config)
+}

@@ -448,6 +448,71 @@ impl Cmdq<'_> {
         })
     }
 
+    /// Sends an asynchronous GMC command and waits atomically for its event.
+    ///
+    /// The command queue remains locked from the send through the matching
+    /// event, preventing another transaction from consuming its completion.
+    /// GMC events are passed to `predicate`, then to `handler` if the predicate returns false.
+    /// GMC responses are debug-logged and consumed without invoking either callback. Interleaved
+    /// RPC messages are logged as events and consumed.
+    ///
+    /// One receive deadline starts after sending and is not extended by other messages. It does
+    /// not bound waiting for the mutex or for space to send the request.
+    ///
+    /// Both callbacks run with the queue locked and must not reenter this queue or reset it.
+    /// Their second argument is the raw `max_resp_or_status` word of the event header.
+    ///
+    /// # Errors
+    ///
+    /// - `EMSGSIZE` if the request exceeds the command queue's maximum element size.
+    /// - `ETIMEDOUT` if space does not become available to send the request, or if no event
+    ///   satisfies `predicate` before the receive deadline.
+    /// - `EIO` if the command queue slot cannot hold the request headers, the receive queue is
+    ///   stalled by an invalid element, or a received element fails framing validation.
+    ///
+    /// Errors from initializing the request headers and from either callback are propagated
+    /// as-is. The current valid element is consumed before a callback error is returned.
+    #[expect(dead_code)]
+    pub(crate) fn send_gmc_and_wait_event(
+        &self,
+        command_id: u32,
+        payload: &[u8],
+        timeout: Delta,
+        mut predicate: impl FnMut(u32, u32, u64, &[u8], &[u8]) -> Result<bool>,
+        mut handler: impl FnMut(u32, u32, u64, &[u8], &[u8]) -> Result,
+    ) -> Result {
+        let mut inner = self.inner.lock();
+        inner.send_command_element(RawGmcCommand {
+            command_id,
+            payload,
+            max_response_size: 0,
+        })?;
+        let dev = inner.dev;
+        let deadline = Instant::<Monotonic>::now() + timeout;
+
+        inner.await_msg_with_deadline(deadline, |message| {
+            let GspParsedMessage::Gmc(message) = message else {
+                message.log(dev);
+                return Ok(None);
+            };
+            let header = message.header();
+            let (payload_0, payload_1) = message.payload();
+            if header.command().is_response() {
+                return Ok(None);
+            }
+
+            let command = GmcCommand::from(header.command()).0;
+            let max_resp_or_status = header.raw_status_word();
+            let sequence = header.sequence();
+            if predicate(command, max_resp_or_status, sequence, payload_0, payload_1)? {
+                return Ok(Some(()));
+            }
+
+            handler(command, max_resp_or_status, sequence, payload_0, payload_1)?;
+            Ok(None)
+        })
+    }
+
     /// Sends `command` to the GSP and waits for the reply.
     ///
     /// GMC events that arrive before the reply are passed to `on_event`, and RPC messages are

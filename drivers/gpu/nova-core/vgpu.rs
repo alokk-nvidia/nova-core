@@ -11,13 +11,15 @@ use kernel::{
 };
 
 use crate::{
+    firmware::gsp::BuildId,
     fsp::{
         Fsp,
         VgpuMode, //
     },
     gpu::{
         ChannelIdPool,
-        Chipset, //
+        Chipset,
+        Spec, //
     },
     gsp::{
         cmdq::Cmdq,
@@ -38,6 +40,7 @@ mod gsp_plugin_comm;
 mod gsp_plugin_rpc;
 mod hal;
 mod instance;
+mod log;
 mod scrubber;
 mod vram;
 
@@ -113,6 +116,8 @@ pub(crate) struct VgpuManager<'gpu> {
     instances: Mutex<VgpuInstances<'gpu>>,
     dev: &'gpu device::Device<device::Bound>,
     cmdq: &'gpu Cmdq<'gpu>,
+    spec: Spec,
+    build_id: Option<&'gpu BuildId>,
     bar_user: &'gpu BarUser<'gpu>,
     mm: &'gpu Mutex<GpuMm<'gpu>>,
     chid_pool: &'gpu ChannelIdPool,
@@ -127,6 +132,8 @@ impl<'gpu> VgpuManager<'gpu> {
     pub(crate) fn new(
         dev: &'gpu device::Device<device::Bound>,
         cmdq: &'gpu Cmdq<'gpu>,
+        spec: Spec,
+        build_id: Option<&'gpu BuildId>,
         bar_user: &'gpu BarUser<'gpu>,
         mm: &'gpu Mutex<GpuMm<'gpu>>,
         chid_pool: &'gpu ChannelIdPool,
@@ -139,6 +146,8 @@ impl<'gpu> VgpuManager<'gpu> {
             instances <- new_mutex!(VgpuInstances::new(), "nova-core::vgpu-instances"),
             dev,
             cmdq,
+            spec,
+            build_id,
             bar_user,
             mm,
             chid_pool,

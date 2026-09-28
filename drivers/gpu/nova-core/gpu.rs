@@ -631,9 +631,10 @@ impl<'gpu> Gpu<'gpu> {
                         // SAFETY: These sibling fields are initialized at their final pinned
                         // addresses. The private manager cannot escape this `Gpu`, and is dropped
                         // before all its dependencies, both here on failure and on normal removal.
-                        let (cmdq, bar_user, mm, chid_pool) = unsafe {
+                        // The GSP build ID is not modified after initialization.
+                        let (gsp, bar_user, mm, chid_pool) = unsafe {
                             (
-                                &*core::ptr::from_ref(&gsp_resources.gsp.cmdq),
+                                &*core::ptr::from_ref(&gsp_resources.gsp),
                                 &*core::ptr::from_ref(bar_user.as_ref().get_ref()),
                                 &*core::ptr::from_ref(mm.as_ref().get_ref()),
                                 &*core::ptr::from_ref(chid_pool.as_ref().get_ref()),
@@ -641,7 +642,9 @@ impl<'gpu> Gpu<'gpu> {
                         };
                         Some(KBox::pin_init(VgpuManager::new(
                             dev,
-                            cmdq,
+                            &gsp.cmdq,
+                            gsp_resources.spec,
+                            gsp.build_id(),
                             bar_user,
                             mm,
                             chid_pool,

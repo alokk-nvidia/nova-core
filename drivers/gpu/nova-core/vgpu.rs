@@ -42,6 +42,8 @@ mod hal;
 mod instance;
 mod log;
 mod scrubber;
+#[cfg_attr(not(CONFIG_PCI_IOV), expect(dead_code, unreachable_pub))]
+pub(crate) mod vgpu_api;
 mod vram;
 
 /// vGPU state detected during GPU construction.

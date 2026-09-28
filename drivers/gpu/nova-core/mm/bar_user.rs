@@ -59,12 +59,12 @@ impl<'a> BarUser<'a> {
     }
 
     /// Map physical pages to a contiguous BAR1 virtual range.
-    pub(crate) fn map(
-        &self,
+    pub(crate) fn map<'access>(
+        &'access self,
         mm: &mut GpuMm<'_>,
         pfns: &[Pfn],
         writable: bool,
-    ) -> Result<BarUserAccess<'_>> {
+    ) -> Result<BarUserAccess<'access, 'a>> {
         if pfns.is_empty() {
             return Err(EINVAL);
         }
@@ -81,14 +81,14 @@ impl<'a> BarUser<'a> {
 /// Access object for a mapped BAR1 region.
 ///
 /// Borrows the [`BarUser`] managing the mapping for the lifetime of the access object.
-pub(crate) struct BarUserAccess<'a> {
-    bar_user: &'a BarUser<'a>,
+pub(crate) struct BarUserAccess<'access, 'gpu> {
+    bar_user: &'access BarUser<'gpu>,
     /// Cleared only after PTE invalidation and its TLB flush succeed.
     mapped: Option<MappedRange>,
 }
 
 #[expect(dead_code)]
-impl BarUserAccess<'_> {
+impl BarUserAccess<'_, '_> {
     /// Tear down the BAR1 mapping.
     pub(crate) fn release(mut self, mm: &mut GpuMm<'_>) -> Result {
         self.unmap(mm)
@@ -168,7 +168,7 @@ impl BarUserAccess<'_> {
     }
 }
 
-impl Drop for BarUserAccess<'_> {
+impl Drop for BarUserAccess<'_, '_> {
     fn drop(&mut self) {
         if self.mapped.is_some() {
             kernel::pr_warn!(
@@ -186,7 +186,7 @@ impl Drop for BarUserAccess<'_> {
 /// address space. Uses the `GpuMm`'s buddy allocator to allocate page tables
 /// and test pages as needed.
 #[cfg(CONFIG_NOVA_CORE_SELFTESTS)]
-pub(crate) fn run_self_test(
+pub(super) fn run_self_test(
     dev: &device::Device<device::Bound>,
     mm: &mut GpuMm<'_>,
     bar_user: &BarUser<'_>,

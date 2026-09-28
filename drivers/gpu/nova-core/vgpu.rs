@@ -24,6 +24,7 @@ use crate::{
 
 mod commands;
 mod fw;
+mod gsp_plugin_comm;
 mod hal;
 mod instance;
 mod vram;

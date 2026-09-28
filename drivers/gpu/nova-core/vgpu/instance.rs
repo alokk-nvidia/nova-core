@@ -7,10 +7,12 @@ use core::num::{
 };
 
 use kernel::{
+    debugfs,
     device,
     prelude::*,
     ptr::Alignment,
     sizes::SizeConstants,
+    str::CString,
     time::{
         delay::fsleep,
         Delta,
@@ -21,7 +23,11 @@ use kernel::{
 
 use crate::{
     driver::Bar0,
-    gpu::ChannelIdReservation,
+    firmware::gsp::BuildId,
+    gpu::{
+        ChannelIdReservation,
+        Spec, //
+    },
     gsp::{
         cmdq::Cmdq,
         commands::FifoEngineList, //
@@ -47,8 +53,12 @@ use super::{
         BootloadInfo,
         ChannelMapEntry, //
     },
-    gsp_plugin_comm::CommBufferRegion,
+    gsp_plugin_comm::{
+        CommBufferRegion,
+        MappedPluginLogBuffers, //
+    },
     gsp_plugin_rpc::PluginRpc,
+    log::VgpuLogBuffers,
     scrubber::CeUtils,
     vram::{
         VgpuVramLayout,
@@ -150,6 +160,7 @@ struct VgpuInstance<'gpu> {
     vgpu_type: VgpuType,
     vm_pid: u32,
     num_plugin_channels: u32,
+    debugfs_logs: Option<Pin<KBox<debugfs::Scope<VgpuLogBuffers<'gpu>>>>>,
     plugin_rpc: PluginRpc<'gpu, 'gpu>,
     // Unmap the communication region before returning its slot and channel IDs.
     vram_slot: VgpuVramSlot,
@@ -197,6 +208,20 @@ impl<'gpu> VgpuInstance<'gpu> {
         self.configure_plugin(dev)?;
         set_plugin_bme(dev, &mut self.plugin_rpc, true)?;
 
+        match self
+            .plugin_rpc
+            .comm()
+            .mapped_plugin_logs()
+            .and_then(|buffers| create_debugfs_logs(buffers, self.dbdf, vgpu.spec, vgpu.build_id))
+        {
+            Ok(logs) => self.debugfs_logs = Some(logs),
+            Err(error) => dev_warn!(
+                dev,
+                "debugfs logs unavailable for gfid={}: {:?}\n",
+                self.gfid.get(),
+                error,
+            ),
+        }
         Ok(())
     }
 
@@ -222,6 +247,8 @@ impl<'gpu> VgpuInstance<'gpu> {
                 send_cleanup(vgpu.dev, vgpu.cmdq, self.gfid)?;
                 self.needs_teardown = false;
             }
+            // Debugfs readers use BAR1 offsets directly and must finish before unmapping.
+            self.debugfs_logs = None;
             self.plugin_rpc.unmap()
         })();
         if let Err(error) = result {
@@ -318,6 +345,34 @@ impl InstanceInfo {
             vm_pid,
         }
     }
+}
+
+fn create_debugfs_logs<'gpu>(
+    buffers: MappedPluginLogBuffers<'gpu>,
+    dbdf: Dbdf,
+    spec: Spec,
+    build_id: Option<&BuildId>,
+) -> Result<Pin<KBox<debugfs::Scope<VgpuLogBuffers<'gpu>>>>> {
+    let logs = VgpuLogBuffers::new(buffers, spec, build_id);
+    let directory = CString::try_from_fmt(fmt!(
+        "{:04x}:{:02x}:{:02x}.{:x}-vgpu",
+        dbdf.domain(),
+        dbdf.bus(),
+        dbdf.device(),
+        dbdf.function(),
+    ))?;
+
+    #[allow(static_mut_refs)]
+    // SAFETY: The root is initialized before driver registration and cleared
+    // only after driver unregistration has drained all users.
+    let root = unsafe { crate::DEBUGFS_ROOT.as_ref() }.ok_or(ENODEV)?;
+
+    KBox::pin_init(
+        root.scope(logs, &directory, |logs, directory| {
+            VgpuLogBuffers::register_debugfs(logs, directory);
+        }),
+        GFP_KERNEL,
+    )
 }
 
 /// Registry of live vGPU instances.
@@ -420,6 +475,7 @@ impl<'gpu> VgpuInstances<'gpu> {
             vgpu_type,
             vm_pid,
             num_plugin_channels: PLUGIN_CHANNELS_PER_ENGINE,
+            debugfs_logs: None,
             plugin_rpc: PluginRpc::new(comm, bar0, gfid),
             vram_slot,
             chids,

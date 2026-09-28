@@ -180,6 +180,21 @@ impl LogBufferHeader {
     }
 }
 
+/// Size of the header prepended to debugfs log buffer dumps.
+pub(crate) const LOG_BUFFER_HEADER_SIZE: usize = size_of::<LogBufferHeader>();
+
+/// Builds a log header using the GPU implementation reported by the hardware.
+pub(crate) fn build_log_buffer_header(
+    spec: Spec,
+    build_id: &BuildId,
+    task_prefix: &str,
+) -> [u8; LOG_BUFFER_HEADER_SIZE] {
+    let header = LogBufferHeader::new(spec, build_id, task_prefix);
+    let mut bytes = [0; LOG_BUFFER_HEADER_SIZE];
+    bytes.copy_from_slice(header.as_bytes());
+    bytes
+}
+
 /// The logging buffers are byte queues that contain encoded printf-like
 /// messages from GSP-RM.  They need to be decoded by a special application
 /// that can parse the buffers.
@@ -368,6 +383,8 @@ impl<'a> LogBuffers<'a> {
 pub(crate) struct Gsp<'gsp> {
     /// The GSP firmware's TLV.
     gsp_tlv: firmware::Firmware,
+    /// Build identifier of the firmware whose log buffers are exposed.
+    build_id: Option<BuildId>,
     /// Libos arguments.
     pub(crate) libos: Coherent<'gsp, [LibosMemoryRegionInitArgument]>,
     /// Log buffers, optionally exposed via debugfs.
@@ -383,6 +400,11 @@ pub(crate) struct Gsp<'gsp> {
 }
 
 impl<'gsp> Gsp<'gsp> {
+    /// Returns the GSP firmware build identifier, when available.
+    pub(crate) fn build_id(&self) -> Option<&BuildId> {
+        self.build_id.as_ref()
+    }
+
     // Creates an in-place initializer for a `Gsp` manager for `pdev`.
     pub(crate) fn new(
         pdev: &'gsp pci::Device<device::Bound>,
@@ -405,6 +427,7 @@ impl<'gsp> Gsp<'gsp> {
 
             Ok(try_pin_init!(Self {
                 gsp_tlv,
+                build_id,
                 cmdq <- Cmdq::new(dev, bar),
                 rm_state_monitor: Coherent::zeroed(dev, GFP_KERNEL)?,
                 rmargs: Coherent::init(

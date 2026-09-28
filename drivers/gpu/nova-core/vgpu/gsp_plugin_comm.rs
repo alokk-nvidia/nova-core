@@ -4,18 +4,22 @@
 //! GSP plugin communication buffer mappings and access.
 
 use kernel::{
+    io::Io,
     num::casts::u32_as_usize,
     prelude::*,
     sync::Mutex, //
 };
 
-use crate::mm::{
-    bar_user::{
-        BarMapping,
-        BarUser, //
+use crate::{
+    driver::Bar1,
+    mm::{
+        bar_user::{
+            BarMapping,
+            BarUser, //
+        },
+        vram::VramRegion,
+        GpuMm, //
     },
-    vram::VramRegion,
-    GpuMm, //
 };
 
 use super::fw::{
@@ -57,6 +61,97 @@ fn take_region(region: &VramRegion, cursor: &mut u64, size: u32) -> Result<VramR
     let subregion = region.subregion(*cursor..end)?;
     *cursor = end;
     Ok(subregion)
+}
+
+/// BAR1 view of one vGPU plugin log buffer.
+pub(super) struct MappedPluginLogBuffer<'gpu> {
+    bar1: Bar1<'gpu>,
+    gpu_va_addr: usize,
+    size: usize,
+}
+
+impl<'gpu> MappedPluginLogBuffer<'gpu> {
+    fn new(map: &BarMapping<'_, 'gpu>, region: &VramRegion) -> Result<Self> {
+        let start = region
+            .address()
+            .checked_sub(map.region().address())
+            .ok_or(EINVAL)
+            .and_then(|start| usize::try_from(start).map_err(|_| EOVERFLOW))?;
+        let size = usize::try_from(region.size()).map_err(|_| EOVERFLOW)?;
+        let end = start.checked_add(size).ok_or(EOVERFLOW)?;
+        if end > map.size() || !start.is_multiple_of(4) || !size.is_multiple_of(4) {
+            return Err(EINVAL);
+        }
+
+        let gpu_va_addr = usize::try_from(map.gpu_va_addr()?)
+            .map_err(|_| EOVERFLOW)?
+            .checked_add(start)
+            .ok_or(EOVERFLOW)?;
+        if !gpu_va_addr.is_multiple_of(4) {
+            return Err(EINVAL);
+        }
+
+        let bar1 = map.bar1();
+        if gpu_va_addr.checked_add(size).ok_or(EOVERFLOW)? > bar1.size() {
+            return Err(EINVAL);
+        }
+
+        Ok(Self {
+            bar1,
+            gpu_va_addr,
+            size,
+        })
+    }
+
+    pub(super) const fn size(&self) -> usize {
+        self.size
+    }
+
+    pub(super) fn read(&self, offset: usize, output: &mut [u8]) -> Result {
+        let end = offset.checked_add(output.len()).ok_or(EOVERFLOW)?;
+        if end > self.size {
+            return Err(EINVAL);
+        }
+
+        let mut source = offset;
+        let mut copied = 0usize;
+
+        while copied < output.len() {
+            let aligned_source = source & !3;
+            let within = source & 3;
+            let bar_offset = self
+                .gpu_va_addr
+                .checked_add(aligned_source)
+                .ok_or(EOVERFLOW)?;
+            let bytes = self.bar1.try_read32(bar_offset)?.to_le_bytes();
+            let chunk = (4 - within).min(output.len() - copied);
+
+            output[copied..copied + chunk].copy_from_slice(&bytes[within..within + chunk]);
+            source = source.checked_add(chunk).ok_or(EOVERFLOW)?;
+            copied += chunk;
+        }
+
+        Ok(())
+    }
+}
+
+/// BAR1 views of all vGPU plugin log buffers.
+pub(super) struct MappedPluginLogBuffers<'gpu> {
+    init: MappedPluginLogBuffer<'gpu>,
+    vgpu: MappedPluginLogBuffer<'gpu>,
+    kernel: MappedPluginLogBuffer<'gpu>,
+}
+
+impl<'gpu> MappedPluginLogBuffers<'gpu> {
+    pub(super) fn into_parts(
+        self,
+    ) -> (
+        MappedPluginLogBuffer<'gpu>,
+        MappedPluginLogBuffer<'gpu>,
+        MappedPluginLogBuffer<'gpu>,
+    ) {
+        (self.init, self.vgpu, self.kernel)
+    }
 }
 
 /// BAR1 mapping of the plugin communication region in its management heap.
@@ -216,6 +311,15 @@ impl<'map, 'gpu> CommBufferRegion<'map, 'gpu> {
             vgpu: self.vgpu_log.clone(),
             kernel: self.kernel_log.clone(),
         }
+    }
+
+    /// Return BAR1 views that must stop being read before this mapping is destroyed.
+    pub(super) fn mapped_plugin_logs(&self) -> Result<MappedPluginLogBuffers<'gpu>> {
+        Ok(MappedPluginLogBuffers {
+            init: MappedPluginLogBuffer::new(&self.map, &self.init_log)?,
+            vgpu: MappedPluginLogBuffer::new(&self.map, &self.vgpu_log)?,
+            kernel: MappedPluginLogBuffer::new(&self.map, &self.kernel_log)?,
+        })
     }
 
     /// Clear a previous boot marker before starting the plugin.

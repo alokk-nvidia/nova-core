@@ -229,7 +229,7 @@ const REGISTRY_ENTRIES: &[(&[u8], u32)] = &[
 
 impl GspInitRequest {
     fn build_vf_info(ctx: &GspBootContext<'_, '_>) -> Result<Option<VfInfo>> {
-        let total_vfs = match ctx.vgpu.state() {
+        let total_vfs = match *ctx.vgpu_state {
             VgpuState::Disabled => return Ok(None),
             VgpuState::Enabled { total_vfs } => total_vfs,
         };
@@ -272,7 +272,7 @@ impl GspInitRequest {
     pub(crate) fn new(ctx: &GspBootContext<'_, '_>) -> Result<Self> {
         let dev = ctx.pdev;
         let chipset = ctx.chipset;
-        let vgpu_state = ctx.vgpu.state();
+        let vgpu_state = *ctx.vgpu_state;
         let mut regkeys = KVVec::new();
         for &(name, value) in REGISTRY_ENTRIES {
             regkeys.push(RegKey::new(name, value), GFP_KERNEL)?;

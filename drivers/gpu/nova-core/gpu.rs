@@ -447,7 +447,7 @@ impl PinnedDrop for GspResources<'_> {
                     gsp_falcon: &*this.gsp_falcon,
                     sec2_falcon: &*this.sec2_falcon,
                     fsp: this.fsp.as_mut(),
-                    vgpu: &*this.vgpu,
+                    vgpu_state: this.vgpu.state(),
                 },
                 bundle,
             )
@@ -522,7 +522,7 @@ impl<'gpu> Gpu<'gpu> {
                     gsp_falcon,
                     sec2_falcon,
                     fsp: fsp.as_mut(),
-                    vgpu,
+                    vgpu_state: vgpu.state(),
                 })?,
             }),
 

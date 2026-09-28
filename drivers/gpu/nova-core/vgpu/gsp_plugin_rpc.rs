@@ -65,7 +65,6 @@ impl<'map, 'gpu> PluginRpc<'map, 'gpu> {
     }
 
     /// Initialize the control and response buffers for the first RPC.
-    #[expect(dead_code)]
     pub(super) fn init_rpc(&mut self) -> Result {
         self.comm.initialize()?;
         self.message_sequence = 0;
@@ -82,7 +81,6 @@ impl<'map, 'gpu> PluginRpc<'map, 'gpu> {
     }
 
     /// Write one RPC message, ring the VF doorbell, and wait for its response.
-    #[expect(dead_code)]
     pub(super) fn rpc_call(
         &mut self,
         dev: &device::Device<device::Bound>,

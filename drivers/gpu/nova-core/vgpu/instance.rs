@@ -31,6 +31,8 @@ use crate::{
 use super::{
     commands::{
         send_bootload,
+        send_cleanup,
+        send_shutdown,
         Dbdf, //
     },
     fw::commands::{
@@ -143,15 +145,37 @@ struct VgpuInstance<'gpu> {
     // Unmap the communication region before returning its slot and channel IDs.
     vram_slot: VgpuVramSlot,
     chids: ChannelIdReservation<'gpu>,
+    needs_teardown: bool,
+    /// An uncertain or failed operation retains resources until device removal.
+    failure: Option<Error>,
 }
 
 impl<'gpu> VgpuInstance<'gpu> {
-    #[expect(dead_code)]
     fn activate(&mut self, vgpu: &VgpuManager<'gpu>) -> Result {
         let dev = vgpu.dev;
         self.bootload(dev, vgpu.cmdq, &vgpu.fifo_engine_list)?;
 
         Ok(())
+    }
+
+    /// Tear down once, retaining all remaining resources if an operation fails.
+    fn teardown(&mut self, vgpu: &VgpuManager<'gpu>) -> Result {
+        if let Some(error) = self.failure {
+            return Err(error);
+        }
+        let result = (|| {
+            self.shutdown(vgpu.dev, vgpu.cmdq)?;
+
+            if self.needs_teardown {
+                send_cleanup(vgpu.dev, vgpu.cmdq, self.gfid)?;
+                self.needs_teardown = false;
+            }
+            self.comm.unmap()
+        })();
+        if let Err(error) = result {
+            self.failure = Some(error);
+        }
+        result
     }
 
     /// Bootload the GSP vGPU plugin and wait for its BAR1 ready indication.
@@ -192,11 +216,21 @@ impl<'gpu> VgpuInstance<'gpu> {
         );
 
         self.comm.clear_plugin_ready()?;
+        self.needs_teardown = true;
         send_bootload(dev, cmdq, &payload)?;
 
         wait_plugin_ready(dev, &self.comm)?;
 
         dev_dbg!(dev, "bootload: gfid={} plugin ready\n", self.gfid.get());
+        Ok(())
+    }
+
+    /// Stop the plugin when firmware may own instance resources.
+    fn shutdown(&mut self, dev: &device::Device<device::Bound>, cmdq: &Cmdq<'_>) -> Result {
+        if self.needs_teardown {
+            send_shutdown(dev, cmdq, self.gfid)?;
+            dev_dbg!(dev, "shutdown: gfid={} stopped\n", self.gfid.get());
+        }
         Ok(())
     }
 }
@@ -255,8 +289,12 @@ impl<'gpu> VgpuInstances<'gpu> {
         Ok(slot)
     }
 
-    /// Allocate resources and register a new inactive vGPU instance.
-    fn allocate_instance(&mut self, vgpu: &VgpuManager<'gpu>, info: InstanceInfo) -> Result<Gfid> {
+    /// Register host resources before submitting any firmware work.
+    fn allocate_instance<'a>(
+        &'a mut self,
+        vgpu: &'a VgpuManager<'gpu>,
+        info: InstanceInfo,
+    ) -> Result<PendingInstance<'a, 'gpu>> {
         let InstanceInfo {
             gfid,
             dbdf,
@@ -316,23 +354,91 @@ impl<'gpu> VgpuInstances<'gpu> {
             comm,
             vram_slot,
             chids,
+            needs_teardown: false,
+            failure: None,
         };
         self.instances
             .push_within_capacity(instance)
             .map_err(|_| EIO)?;
 
-        Ok(gfid)
+        Ok(PendingInstance {
+            instances: self,
+            vgpu,
+            gfid,
+            committed: false,
+        })
     }
 
-    /// Remove an instance and release its channel and VRAM reservations.
-    fn destroy_instance(&mut self, gfid: Gfid) -> Result {
+    /// Remove an instance only after firmware and mapping teardown have succeeded.
+    fn destroy_instance(&mut self, vgpu: &VgpuManager<'gpu>, gfid: Gfid) -> Result {
         let instance_index = self
             .instances
             .iter()
             .position(|instance| instance.gfid == gfid)
             .ok_or(ENOENT)?;
+        let instance = self.instances.get_mut(instance_index).ok_or(EIO)?;
+        instance.teardown(vgpu)?;
+
         let instance = self.instances.remove(instance_index).map_err(|_| EIO)?;
         drop(instance);
         Ok(())
+    }
+
+    /// Release the registry while the manager's MM and firmware dependencies remain available.
+    pub(super) fn release_all(&mut self, vgpu: &VgpuManager<'gpu>) {
+        for instance in &mut self.instances {
+            // Failed operations retain their resources until this final device removal.
+            // Do not resubmit commands whose firmware outcome was uncertain.
+            if instance.failure.is_none() {
+                if let Err(error) = instance.teardown(vgpu) {
+                    dev_err!(
+                        vgpu.dev,
+                        "vGPU teardown failed for gfid={}: {:?}\n",
+                        instance.gfid.get(),
+                        error,
+                    );
+                }
+            }
+        }
+        self.instances.clear();
+    }
+}
+
+/// Rolls back this creation attempt unless ownership has passed to the caller.
+struct PendingInstance<'a, 'gpu> {
+    instances: &'a mut VgpuInstances<'gpu>,
+    vgpu: &'a VgpuManager<'gpu>,
+    gfid: Gfid,
+    committed: bool,
+}
+
+#[expect(dead_code)]
+impl PendingInstance<'_, '_> {
+    fn activate(mut self) -> Result {
+        let instance = self
+            .instances
+            .instances
+            .iter_mut()
+            .find(|instance| instance.gfid == self.gfid)
+            .ok_or(EIO)?;
+        instance.activate(self.vgpu)?;
+        self.committed = true;
+        Ok(())
+    }
+}
+
+impl Drop for PendingInstance<'_, '_> {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        if let Err(error) = self.instances.destroy_instance(self.vgpu, self.gfid) {
+            dev_err!(
+                self.vgpu.dev,
+                "vGPU creation could not release gfid={}: {:?}; resources retained until removal\n",
+                self.gfid.get(),
+                error,
+            );
+        }
     }
 }

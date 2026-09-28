@@ -105,7 +105,7 @@ impl VgpuState {
 use self::instance::VgpuInstances;
 
 /// Runtime resources for an enabled vGPU boot.
-#[pin_data]
+#[pin_data(PinnedDrop)]
 pub(crate) struct VgpuManager<'gpu> {
     #[pin]
     instances: Mutex<VgpuInstances<'gpu>>,
@@ -144,5 +144,12 @@ impl<'gpu> VgpuManager<'gpu> {
             total_channels,
             fifo_engine_list,
         })
+    }
+}
+
+#[pinned_drop]
+impl PinnedDrop for VgpuManager<'_> {
+    fn drop(self: Pin<&mut Self>) {
+        self.instances.lock().release_all(&self);
     }
 }

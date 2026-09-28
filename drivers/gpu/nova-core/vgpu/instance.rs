@@ -31,6 +31,7 @@ use crate::{
 
 use super::{
     commands::{
+        negotiate_plugin_version,
         send_bootload,
         send_cleanup,
         send_shutdown,
@@ -156,6 +157,8 @@ impl<'gpu> VgpuInstance<'gpu> {
     fn activate(&mut self, vgpu: &VgpuManager<'gpu>) -> Result {
         let dev = vgpu.dev;
         self.bootload(dev, vgpu.cmdq, &vgpu.fifo_engine_list)?;
+        self.plugin_rpc.init_rpc()?;
+        negotiate_plugin_version(dev, &mut self.plugin_rpc)?;
 
         Ok(())
     }

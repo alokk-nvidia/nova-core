@@ -78,7 +78,6 @@ fn check_status(dev: &device::Device<device::Bound>, command_id: u32, status: u3
 }
 
 /// Query the vGPU type assigned to a VF by its DBDF.
-#[expect(dead_code)]
 pub(super) fn query_assigned_vf_type(
     dev: &device::Device<device::Bound>,
     cmdq: &Cmdq<'_>,
@@ -95,7 +94,6 @@ pub(super) fn query_assigned_vf_type(
 }
 
 /// Query and decode the firmware properties of one vGPU type.
-#[expect(dead_code)]
 pub(super) fn query_vgpu_properties(
     dev: &device::Device<device::Bound>,
     cmdq: &Cmdq<'_>,
@@ -205,6 +203,14 @@ pub(super) fn set_plugin_bme(
 ) -> Result {
     let bme = encode_plugin_set_bme(enable)?;
     rpc.rpc_call_nvkv(dev, RpcMessage::UpdateBmeState, &bme)
+}
+
+/// Reset an active GSP plugin.
+pub(super) fn reset_plugin(
+    dev: &device::Device<device::Bound>,
+    rpc: &mut PluginRpc<'_, '_>,
+) -> Result {
+    rpc.rpc_call(dev, RpcMessage::Reset, &[])
 }
 
 /// Whether a failed allocation may still have transferred CHID ownership to firmware.

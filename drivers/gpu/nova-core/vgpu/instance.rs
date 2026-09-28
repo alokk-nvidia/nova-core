@@ -39,13 +39,16 @@ use super::{
     commands::{
         free_ceutils,
         negotiate_plugin_version,
+        query_vgpu_properties,
+        reset_plugin,
         send_bootload,
         send_cleanup,
         send_plugin_config,
         send_shutdown,
         set_plugin_bme,
         CeUtilsAllocError,
-        Dbdf, //
+        Dbdf,
+        VgpuProperties, //
     },
     fw::commands::{
         encode_plugin_config_params,
@@ -124,7 +127,6 @@ pub(super) struct Gfid(NonZero<u16>);
 
 impl Gfid {
     /// Validates an external GFID for a device supporting `total_vfs` VFs.
-    #[expect(dead_code)]
     pub(super) fn new(gfid: u32, total_vfs: NonZero<u16>) -> Result<Self> {
         let gfid = u16::try_from(gfid).map_err(|_| EINVAL)?;
         let gfid = NonZero::new(gfid).ok_or(EINVAL)?;
@@ -142,15 +144,28 @@ impl Gfid {
 }
 
 /// Resource requirements and device identity for one vGPU type.
-#[expect(dead_code)]
 pub(super) struct VgpuType {
-    vgpu_type_id: u32,
-    bar1_length: u64,
+    pub(super) vgpu_type_id: u32,
+    pub(super) bar1_length: u64,
     max_instance: u32,
-    pci_dev_id: u32,
-    pci_subsys_id: u32,
-    fb_length: u64,
+    pub(super) pci_dev_id: u32,
+    pub(super) pci_subsys_id: u32,
+    pub(super) fb_length: u64,
     gsp_heap_size: u64,
+}
+
+impl VgpuType {
+    fn from_properties(properties: &VgpuProperties) -> Self {
+        Self {
+            vgpu_type_id: properties.type_id,
+            bar1_length: properties.bar1_length,
+            max_instance: properties.max_instance,
+            pci_dev_id: properties.dev_id,
+            pci_subsys_id: properties.subsystem_id,
+            fb_length: properties.fb_length,
+            gsp_heap_size: properties.gsp_heap_size,
+        }
+    }
 }
 
 /// A vGPU instance and the resources reserved for it.
@@ -166,6 +181,7 @@ struct VgpuInstance<'gpu> {
     vram_slot: VgpuVramSlot,
     chids: ChannelIdReservation<'gpu>,
     ceutils: Option<CeUtils>,
+    active: bool,
     needs_teardown: bool,
     /// An uncertain or failed operation retains resources until device removal.
     failure: Option<Error>,
@@ -222,6 +238,7 @@ impl<'gpu> VgpuInstance<'gpu> {
                 error,
             ),
         }
+        self.active = true;
         Ok(())
     }
 
@@ -323,6 +340,7 @@ impl<'gpu> VgpuInstance<'gpu> {
             send_shutdown(dev, cmdq, self.gfid)?;
             dev_dbg!(dev, "shutdown: gfid={} stopped\n", self.gfid.get());
         }
+        self.active = false;
         Ok(())
     }
 }
@@ -335,7 +353,6 @@ pub(super) struct InstanceInfo {
     vm_pid: u32,
 }
 
-#[expect(dead_code)]
 impl InstanceInfo {
     pub(super) const fn new(gfid: Gfid, dbdf: Dbdf, vgpu_type: VgpuType, vm_pid: u32) -> Self {
         Self {
@@ -381,7 +398,6 @@ pub(super) struct VgpuInstances<'gpu> {
     vram_slots: Option<VgpuVramSlotAllocator>,
 }
 
-#[expect(dead_code)]
 impl<'gpu> VgpuInstances<'gpu> {
     pub(super) const fn new() -> Self {
         Self {
@@ -480,6 +496,7 @@ impl<'gpu> VgpuInstances<'gpu> {
             vram_slot,
             chids,
             ceutils: None,
+            active: false,
             needs_teardown: false,
             failure: None,
         };
@@ -538,7 +555,6 @@ struct PendingInstance<'a, 'gpu> {
     committed: bool,
 }
 
-#[expect(dead_code)]
 impl PendingInstance<'_, '_> {
     fn activate(mut self) -> Result {
         let instance = self
@@ -567,5 +583,60 @@ impl Drop for PendingInstance<'_, '_> {
                 error,
             );
         }
+    }
+}
+
+/// Query and decode one vGPU type using the typed NVKV schema.
+pub(super) fn query_vgpu_type(
+    dev: &device::Device<device::Bound>,
+    cmdq: &Cmdq<'_>,
+    type_id: u32,
+) -> Result<VgpuType> {
+    let properties = query_vgpu_properties(dev, cmdq, type_id)?;
+    Ok(VgpuType::from_properties(&properties))
+}
+
+impl<'gpu> VgpuManager<'gpu> {
+    /// Allocate, register, and activate a vGPU instance.
+    ///
+    /// Keep the registry locked through creation or rollback so duplicate checks and
+    /// type limits remain stable. MM and BAR-user locks are acquired only within
+    /// individual memory operations, in that order.
+    pub(super) fn create_instance(&self, bar: Bar0<'gpu>, info: InstanceInfo) -> Result {
+        let mut instances = self.instances.lock();
+        instances.allocate_instance(self, bar, info)?.activate()?;
+        Ok(())
+    }
+
+    pub(super) fn close_instance(&self, gfid: Gfid) -> Result {
+        self.instances.lock().destroy_instance(self, gfid)
+    }
+
+    pub(super) fn reset_instance(&self, gfid: Gfid) -> Result {
+        let mut instances = self.instances.lock();
+        let instance = instances
+            .instances
+            .iter_mut()
+            .find(|instance| instance.gfid == gfid)
+            .ok_or(ENOENT)?;
+        if instance.failure.is_some() || !instance.active {
+            return Err(EBUSY);
+        }
+
+        let result = (|| {
+            reset_plugin(self.dev, &mut instance.plugin_rpc)?;
+            instance.ceutils.as_ref().ok_or(EINVAL)?.scrub_guest_fb(
+                self.dev,
+                self.cmdq,
+                self.bar_user,
+                self.mm,
+                &instance.vram_slot.fbmem,
+            )
+        })();
+        if let Err(error) = result {
+            instance.failure = Some(error);
+            instance.active = false;
+        }
+        result
     }
 }

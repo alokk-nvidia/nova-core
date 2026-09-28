@@ -30,6 +30,12 @@ mod selftest;
 mod vbios;
 mod vgpu;
 
+#[cfg(CONFIG_PCI_IOV)]
+pub use vgpu::vgpu_api::{
+    NovaCoreVfApi,
+    VgpuTypeInfo, //
+};
+
 pub(crate) const MODULE_NAME: &core::ffi::CStr = <LocalModule as kernel::ModuleMetadata>::NAME;
 
 // TODO: Move this into per-module data once that exists.

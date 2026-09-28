@@ -905,6 +905,15 @@ impl GmcApiHeader {
         num::u32_as_usize(self.inner.size)
     }
 
+    /// Returns the raw `max_resp_or_status` word carried by a GMC header.
+    ///
+    /// Its meaning for an event is defined by that event's command.
+    pub(crate) fn raw_status_word(&self) -> u32 {
+        // SAFETY: Both union views contain a `u32` at the same offset, so every bit pattern is
+        // valid regardless of whether the header represents a request, response, or event.
+        unsafe { self.inner.__bindgen_anon_1.request.max_response_size }
+    }
+
     /// Returns the `NV_STATUS` carried by a response to a command.
     ///
     /// Returns `Some` with the `NV_STATUS` code if the `response` flag of [`Self::command`] is set;

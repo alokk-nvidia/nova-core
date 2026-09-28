@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 pub(crate) mod commands;
-mod r000_00;
+pub(crate) mod r000_00;
 
 // Alias to avoid repeating the version number with every use.
 use r000_00 as bindings;

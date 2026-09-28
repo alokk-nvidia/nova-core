@@ -145,7 +145,8 @@ impl MessageFromGsp for GspStaticInfo {
     /// # Errors
     ///
     /// - `EINVAL` if the payload is not a whole number of NVKV words, if the stream is malformed
-    ///   or omits a required key, or if GSP-RM reported no framebuffer region.
+    ///   or omits a required key, if GSP-RM reported no framebuffer region, or if the FIFO engine
+    ///   count or indexed entries exceed the supported table capacity.
     /// - `ENOMEM` if the words or the decoded regions cannot be allocated.
     fn read(payload: &mut SBufferIter<core::array::IntoIter<&[u8], 2>>) -> Result<Self> {
         let bytes = payload.flush_into_kvec(GFP_KERNEL)?;
@@ -184,6 +185,7 @@ impl MessageFromGsp for GspStaticInfo {
             bar1_pde_base: reply.bar1_pde_base(),
             usable_fb_regions,
             total_fb_end: reply.total_fb_end().ok_or(EINVAL)?,
+            fifo_engine_list: reply.fifo_engine_list(),
         })
     }
 }

@@ -7,13 +7,17 @@ use kernel::{
         Io,
         Mmio, //
     },
+    prelude::*,
     sizes::SizeConstants,
     time, //
 };
 use pin_init::Zeroable;
 
 use crate::{
-    driver::NovaRegisters,
+    driver::{
+        Bar0,
+        NovaRegisters, //
+    },
     falcon::{
         DmaTrfCmdSize,
         FalconCoreRev,
@@ -37,6 +41,31 @@ register! {
     base: NovaRegisters;
 
     pub(crate) NV_PBUS_SW_SCRATCH(u32)[64] @ 0x00001400 {}
+}
+
+// VIRTUAL_FUNCTION
+
+register! {
+    base: NovaRegisters;
+
+    // PF BAR0 exposes the virtual-function register window at 0x00b8_0000.
+    pub(crate) NV_VIRTUAL_FUNCTION_PRIV_DOORBELL(u32) @ 0x00b8_2200 {
+        31:0 handle;
+    }
+}
+
+impl NV_VIRTUAL_FUNCTION_PRIV_DOORBELL {
+    const DOORBELL_STRIDE: u32 = 32;
+    const DOORBELL_VECTOR: u32 = 17;
+
+    /// Notify the GSP plugin for the given guest function and read back the doorbell.
+    pub(crate) fn ring_gsp_plugin(bar0: Bar0<'_>, gfid: u16) -> Result {
+        // A `u16` GFID produces a handle of at most 0x1f_fff1, which fits in `u32`.
+        let value = u32::from(gfid) * Self::DOORBELL_STRIDE + Self::DOORBELL_VECTOR;
+        bar0.try_write_reg(Self::zeroed().with_handle(value))?;
+        bar0.try_read(NV_VIRTUAL_FUNCTION_PRIV_DOORBELL)?;
+        Ok(())
+    }
 }
 
 // PGC6 register space.

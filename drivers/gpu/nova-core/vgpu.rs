@@ -21,6 +21,7 @@ use crate::{
 };
 
 mod hal;
+mod vram;
 
 /// vGPU state detected during GPU construction.
 #[derive(Debug, Clone, Copy)]

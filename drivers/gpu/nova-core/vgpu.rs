@@ -19,7 +19,17 @@ use crate::{
         ChannelIdPool,
         Chipset, //
     },
-    gsp::commands::FifoEngineList, //
+    gsp::{
+        cmdq::Cmdq,
+        commands::{
+            FifoEngineList,
+            GspStaticInfo, //
+        }, //
+    },
+    mm::{
+        bar_user::BarUser,
+        GpuMm, //
+    }, //
 };
 
 mod commands;
@@ -99,6 +109,10 @@ use self::instance::VgpuInstances;
 pub(crate) struct VgpuManager<'gpu> {
     #[pin]
     instances: Mutex<VgpuInstances<'gpu>>,
+    dev: &'gpu device::Device<device::Bound>,
+    cmdq: &'gpu Cmdq<'gpu>,
+    bar_user: &'gpu BarUser<'gpu>,
+    mm: &'gpu Mutex<GpuMm<'gpu>>,
     chid_pool: &'gpu ChannelIdPool,
     /// VMMU segment size in bytes, or zero if GSP-RM omitted it.
     vmmu_segment_size: u64,
@@ -109,14 +123,22 @@ pub(crate) struct VgpuManager<'gpu> {
 impl<'gpu> VgpuManager<'gpu> {
     /// Retains runtime parameters from a completed vGPU-enabled GSP boot.
     pub(crate) fn new(
+        dev: &'gpu device::Device<device::Bound>,
+        cmdq: &'gpu Cmdq<'gpu>,
+        bar_user: &'gpu BarUser<'gpu>,
+        mm: &'gpu Mutex<GpuMm<'gpu>>,
         chid_pool: &'gpu ChannelIdPool,
-        fifo_engine_list: &FifoEngineList,
-        vmmu_segment_size: u64,
+        info: &GspStaticInfo,
         total_channels: u32,
     ) -> impl PinInit<Self> + use<'gpu> {
-        let fifo_engine_list = *fifo_engine_list;
+        let fifo_engine_list = info.fifo_engine_list();
+        let vmmu_segment_size = info.vmmu_segment_size;
         pin_init!(Self {
             instances <- new_mutex!(VgpuInstances::new(), "nova-core::vgpu-instances"),
+            dev,
+            cmdq,
+            bar_user,
+            mm,
             chid_pool,
             vmmu_segment_size,
             total_channels,

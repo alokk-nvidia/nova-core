@@ -29,9 +29,13 @@ use super::{
             VgpuPropertiesSchema, //
         },
         GMCAPI_CMD_BOOTLOAD_GSP_VGPU_PLUGIN_TASK,
+        GMCAPI_CMD_CLEANUP_GSP_VGPU_PLUGIN_RESOURCES,
         GMCAPI_CMD_QUERY_ASSIGNED_VF_VGPU_TYPE,
-        GMCAPI_CMD_QUERY_VGPU_PROPERTIES, //
-    }, //
+        GMCAPI_CMD_QUERY_VGPU_PROPERTIES,
+        GMCAPI_CMD_SHUTDOWN_GSP_VGPU_PLUGIN_TASK,
+        GMCAPI_CMD_SHUTDOWN_GSP_VGPU_PLUGIN_TASK_COMPLETE, //
+    },
+    instance::Gfid, //
 };
 
 pub(super) use super::fw::commands::{
@@ -108,4 +112,51 @@ pub(super) fn send_bootload(
         Delta::from_secs(10),
     )?;
     check_status(dev, command_id, response.status)
+}
+
+/// Shut down a vGPU plugin task and wait for its completion event.
+pub(super) fn send_shutdown(
+    dev: &device::Device<device::Bound>,
+    cmdq: &Cmdq<'_>,
+    gfid: Gfid,
+) -> Result {
+    let payload = u32::from(gfid.get()).to_le_bytes();
+    cmdq.send_gmc_and_wait_event(
+        GMCAPI_CMD_SHUTDOWN_GSP_VGPU_PLUGIN_TASK,
+        &payload,
+        Delta::from_secs(10),
+        |command_id, _max_response_size, _sequence, payload_0, payload_1| {
+            Ok(
+                command_id == GMCAPI_CMD_SHUTDOWN_GSP_VGPU_PLUGIN_TASK_COMPLETE
+                    && payload
+                        .iter()
+                        .copied()
+                        .eq(Iterator::chain(payload_0.iter(), payload_1)
+                            .take(payload.len())
+                            .copied()),
+            )
+        },
+        |command_id, _max_response_size, _sequence, _payload_0, _payload_1| {
+            dev_dbg!(
+                dev,
+                "shutdown: ignoring unrelated event command={:#x}\n",
+                command_id,
+            );
+            Ok(())
+        },
+    )
+}
+
+/// Release firmware resources after a plugin task has stopped.
+pub(super) fn send_cleanup(
+    dev: &device::Device<device::Bound>,
+    cmdq: &Cmdq<'_>,
+    gfid: Gfid,
+) -> Result {
+    let command_id = GMCAPI_CMD_CLEANUP_GSP_VGPU_PLUGIN_RESOURCES;
+    let response =
+        cmdq.send_gmc_and_receive(command_id, &u32::from(gfid.get()).to_le_bytes(), 0)?;
+    check_status(dev, command_id, response.status)?;
+    dev_dbg!(dev, "cleanup: gfid={} done\n", gfid.get());
+    Ok(())
 }

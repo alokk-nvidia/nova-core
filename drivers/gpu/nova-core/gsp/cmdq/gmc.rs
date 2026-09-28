@@ -469,7 +469,6 @@ impl Cmdq<'_> {
     ///
     /// Errors from initializing the request headers and from either callback are propagated
     /// as-is. The current valid element is consumed before a callback error is returned.
-    #[expect(dead_code)]
     pub(crate) fn send_gmc_and_wait_event(
         &self,
         command_id: u32,

@@ -21,8 +21,10 @@ use crate::{
             nvkv_decode,
             nvkv_encode,
             Accumulated,
+            DecoderValue,
             Encodable,
             Encoder,
+            Indexed,
             Key,
             Required,
             TruncatingArray, //
@@ -307,6 +309,52 @@ impl GspInitRequest {
 
 // Decode:
 
+const MAX_FIFO_ENGINES: usize = 64;
+
+/// Bit mask for `NVGMC_SC_ENGINE_FLAGS_IS_HOST_DRIVEN`.
+const ENGINE_FLAGS_IS_HOST_DRIVEN: u32 = 1 << 0;
+
+/// Host-driven GMC engine IDs in hardware FIFO order, including any repeated IDs.
+///
+/// # Invariants
+///
+/// `count` is at most [`MAX_FIFO_ENGINES`]. The first `count` slots are the retained engine IDs.
+#[derive(Copy, Clone)]
+pub(crate) struct FifoEngineList {
+    gmc_ids: [u32; MAX_FIFO_ENGINES],
+    count: usize,
+}
+
+impl FifoEngineList {
+    #[expect(dead_code)]
+    pub(crate) fn gmc_ids(&self) -> &[u32] {
+        // PANIC: The type invariant bounds `count` by the array capacity.
+        &self.gmc_ids[..self.count]
+    }
+}
+
+/// A FIFO engine count that fits the supported tables.
+///
+/// # Invariants
+///
+/// The count is at most [`MAX_FIFO_ENGINES`].
+#[derive(Default)]
+struct FifoEngineCount(usize);
+
+impl TryFrom<DecoderValue<'_>> for FifoEngineCount {
+    type Error = Error;
+
+    fn try_from(value: DecoderValue<'_>) -> Result<Self> {
+        let count = crate::num::u32_as_usize(u32::try_from(value)?);
+        if count > MAX_FIFO_ENGINES {
+            Err(EINVAL)
+        } else {
+            // INVARIANT: The count was checked against the table capacity above.
+            Ok(Self(count))
+        }
+    }
+}
+
 // Should decode with UnknownKeyPolicy::Ignore.
 nvkv_decode! {
     /// Schema for the `GSP_INIT` response.
@@ -317,6 +365,9 @@ nvkv_decode! {
         fb_regions: Accumulated<FbRegionSchema>,
         bar1_pde_base: Required<Key<u64, 0x1020>>,
         vmmu_segment_size: Key<u64, 0x1050>,
+        fifo_engine_count: Key<FifoEngineCount, 0x0500>,
+        fifo_engine_gmc_ids: Indexed<u32, MAX_FIFO_ENGINES, 0x0501>,
+        fifo_engine_flags: Indexed<u32, MAX_FIFO_ENGINES, 0x0502>,
     }
 }
 
@@ -328,6 +379,9 @@ pub(crate) struct GspInitResponse {
     fb_regions: KVVec<FbRegion>,
     bar1_pde_base: u64,
     vmmu_segment_size: u64,
+    fifo_engine_count: FifoEngineCount,
+    fifo_engine_gmc_ids: [u32; MAX_FIFO_ENGINES],
+    fifo_engine_flags: [u32; MAX_FIFO_ENGINES],
 }
 
 impl GspInitResponse {
@@ -379,6 +433,29 @@ impl GspInitResponse {
             .map(|region| region.limit)
             .max()?
             .checked_add(1)
+    }
+
+    /// Returns the host-driven engines in their firmware FIFO order.
+    pub(crate) fn fifo_engine_list(&self) -> FifoEngineList {
+        // INVARIANT: The list starts empty and appends at most one ID per supported input slot.
+        let mut fifo_engine_list = FifoEngineList {
+            gmc_ids: [0; MAX_FIFO_ENGINES],
+            count: 0,
+        };
+        for (&gmc_id, &flags) in self
+            .fifo_engine_gmc_ids
+            .iter()
+            .zip(&self.fifo_engine_flags)
+            .take(self.fifo_engine_count.0)
+        {
+            if flags & ENGINE_FLAGS_IS_HOST_DRIVEN != 0 {
+                // PANIC: At most one slot is filled per input, and the input has at most
+                // MAX_FIFO_ENGINES entries, so the next retained ID always fits.
+                fifo_engine_list.gmc_ids[fifo_engine_list.count] = gmc_id;
+                fifo_engine_list.count += 1;
+            }
+        }
+        fifo_engine_list
     }
 
     /// Returns the BAR1 page directory entry base address.

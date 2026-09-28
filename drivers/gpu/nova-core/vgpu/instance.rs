@@ -36,6 +36,7 @@ use super::{
         send_cleanup,
         send_plugin_config,
         send_shutdown,
+        set_plugin_bme,
         Dbdf, //
     },
     fw::commands::{
@@ -162,6 +163,7 @@ impl<'gpu> VgpuInstance<'gpu> {
         self.plugin_rpc.init_rpc()?;
         negotiate_plugin_version(dev, &mut self.plugin_rpc)?;
         self.configure_plugin(dev)?;
+        set_plugin_bme(dev, &mut self.plugin_rpc, true)?;
 
         Ok(())
     }

@@ -102,7 +102,6 @@ impl Drop for Slot {
 /// All device accesses and mappings of its regions must end before dropping the slot.
 /// Clearing the entry locks a sleeping mutex, so dropping the slot may sleep.
 #[must_use]
-#[expect(dead_code)]
 pub(super) struct VgpuVramSlot {
     pub(super) fbmem: VramRegion,
     pub(super) mgmt_heap: VramRegion,

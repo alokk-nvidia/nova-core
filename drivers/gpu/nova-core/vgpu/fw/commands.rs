@@ -60,7 +60,6 @@ bitfield! {
 impl ChannelMapEntry {
     const KEY: KeyId = 0x1001;
 
-    #[expect(dead_code)]
     pub(crate) fn new(engine_type: u16, index: u16, chid_offset: u32) -> Self {
         Self::zeroed()
             .with_engine_type(engine_type)
@@ -158,7 +157,6 @@ pub(crate) struct BootloadInfo<'a> {
 }
 
 /// Encodes a `VGPU_BOOTLOAD` request using the typed NVKV schema.
-#[expect(dead_code)]
 pub(crate) fn encode_vgpu_bootload(info: BootloadInfo<'_>) -> Result<KVVec<u64>> {
     let request = VgpuBootloadRequest {
         dbdf: info.dbdf.into(),

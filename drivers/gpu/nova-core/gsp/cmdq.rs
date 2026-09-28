@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 pub(super) mod gmc;
+
 // No RPC command is sent since the switch to the r000 firmware: GSP_INIT and GSP_SUSPEND replaced
 // the RPC commands that the driver used during boot and shutdown. The RPC send and reply paths
 // stay for the commands that later series add, and are built as dead code until then.
@@ -66,6 +67,9 @@ use crate::{
 };
 
 use super::regs;
+
+#[expect(unused_imports)]
+pub(crate) use gmc::GmcResponse;
 
 /// Marker type representing the absence of a reply for a command. Commands using this as their
 /// reply type are sent using [`Cmdq::send_rpc_command_no_wait`].
@@ -720,15 +724,29 @@ impl CmdqInner<'_> {
     /// - Any error returned by `f` with the exception of `ENOMSG`.
     fn await_msg_with<R>(&mut self, f: impl Fn(GspParsedMessage<'_>) -> Result<R>) -> Result<R> {
         let deadline = Instant::<Monotonic>::now() + Cmdq::RECEIVE_TIMEOUT;
+        self.await_msg_with_deadline(deadline, |message| match f(message) {
+            Ok(value) => Ok(Some(value)),
+            Err(ENOMSG) => Ok(None),
+            Err(error) => Err(error),
+        })
+    }
+
+    /// Waits under the queue guard until `f` claims a message, using one receive deadline.
+    ///
+    /// Every valid element is consumed even if `f` fails. Unclaimed messages do not extend the
+    /// deadline. Framing errors stall the queue and are returned without consuming the element.
+    fn await_msg_with_deadline<R>(
+        &mut self,
+        deadline: Instant<Monotonic>,
+        mut f: impl FnMut(GspParsedMessage<'_>) -> Result<Option<R>>,
+    ) -> Result<R> {
         loop {
             let remaining = deadline - Instant::<Monotonic>::now();
             if remaining.is_negative() {
-                break Err(ETIMEDOUT);
+                return Err(ETIMEDOUT);
             }
-            match self.consume_element(remaining, &f)? {
-                Ok(m) => break Ok(m),
-                Err(ENOMSG) => continue,
-                Err(e) => break Err(e),
+            if let Some(value) = self.consume_element(remaining, &mut f)?? {
+                return Ok(value);
             }
         }
     }

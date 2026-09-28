@@ -580,9 +580,12 @@ command reply or an unsolicited event, and the two differ in the function code.
   records, lifecycle notices) need no action and get no line of their own,
   because the receive trace at debug level already records every message's
   arrival with its sequence number, function code, and length.
-* A GMC message carries a command id in place of a function code. Only the
-  ``GSP_INIT`` wait during boot claims GMC messages, so one that arrives
-  anywhere else is logged at warning level and dropped.
+* A GMC message carries a command id in place of a function code. The
+  ``GSP_INIT`` wait and synchronous GMC transactions claim responses with the
+  expected command id and sequence number. These waits consume interleaved RPC
+  messages as events. Unmatched GMC messages are handled by the wait's callback
+  or logged and consumed; a queue drain with no waiting caller logs unclaimed
+  responses and unknown commands at warning level and drops them.
 
 A command's reply must carry the RPC sequence number that nova-core wrote into
 the command, as well as its function code. A message with the awaited function
@@ -602,10 +605,12 @@ element stays at the queue head, and every later receive fails on it with
 The polling path and the IRQ thread both read the queue under the command-queue
 mutex. Replies and events share one queue and one read pointer, so one lock is
 held across the whole drain. A thread waiting for a reply logs each event that
-arrives before the reply and keeps waiting. One deadline of 5 seconds applies to
-the whole wait, rather than a fresh timeout after each message, and the thread
-holds the mutex for the whole wait, so that no other caller consumes the message
-that it waits for.
+arrives before the reply and keeps waiting. One receive deadline applies to
+all messages in the wait. The default timeout is 5 seconds; GMC transactions
+can specify another timeout. For send-and-wait operations the receive deadline
+starts after sending, so it does not bound waiting for the mutex or for
+command-queue space. The thread holds the mutex from sending through receiving,
+so no other caller consumes the message it waits for.
 
 With one lock, a drain waits for an in-flight command's receive to finish or
 time out. For log and error records that delay does not matter.

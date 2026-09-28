@@ -6,6 +6,11 @@
 use kernel::{
     device,
     prelude::*,
+    time::{
+        Delta,
+        Instant,
+        Monotonic, //
+    },
     transmute::{
         AsBytes,
         FromBytes, //
@@ -59,8 +64,8 @@ pub(crate) trait CommandToGsp {
     /// reply.
     type Reply;
 
-    /// Largest reply this command accepts, in bytes. Zero for commands that the GSP does not
-    /// answer.
+    /// Response payload capacity in bytes. Zero permits a status-only response; whether the
+    /// command sends a reply is determined by its protocol and [`Self::Reply`].
     const MAX_REPLY_SIZE: u32;
 
     /// Error type returned by [`CommandToGsp::init`].
@@ -249,9 +254,8 @@ impl<'a> GmcMessage<'a> {
     /// Returns the status code of this message if it is the reply to `command` sent with sequence
     /// number `seq`, `None` otherwise.
     fn is_reply_to(&self, command: GmcCommandId, seq: u32) -> Option<u32> {
-        if matches!(self.header.command().id(), Ok(id) if id == command)
-            && self.header.sequence() == u64::from(seq)
-        {
+        // CAST: `GmcCommandId` is `repr(u32)`, so this cast is lossless.
+        if self.header.is_response_to(command as u32, seq) {
             self.header.status()
         } else {
             None
@@ -295,7 +299,155 @@ impl<'a> GmcMessage<'a> {
     }
 }
 
+/// Response from a GMC API command.
+pub(crate) struct GmcResponse {
+    /// Response status (`NV_STATUS` code). Zero means success.
+    #[expect(dead_code)]
+    pub(crate) status: u32,
+    /// Response payload copied out of the message queue.
+    #[expect(dead_code)]
+    pub(crate) payload: KVec<u8>,
+}
+
+/// A byte payload sent with a runtime-selected GMC command ID.
+struct RawGmcCommand<'a> {
+    command_id: u32,
+    payload: &'a [u8],
+    max_response_size: u32,
+}
+
+impl CommandElement for RawGmcCommand<'_> {
+    const NVDM_TYPE: NvdmType = NvdmType::GmcApi;
+
+    fn size(&self) -> usize {
+        size_of::<GmcApiHeader>() + self.payload.len()
+    }
+
+    fn write(&self, dev: &device::Device, seq: u32, dst: &mut GspCommand<'_>) -> Result {
+        let (header, payload_0) = GmcApiHeader::from_bytes_mut_prefix(dst.contents.0).ok_or(EIO)?;
+        let init = GmcApiHeader::init_raw(
+            self.command_id,
+            u64::from(seq),
+            self.payload.len(),
+            self.max_response_size,
+        );
+        // SAFETY: `header` is valid and is not touched if initialization fails.
+        unsafe { pin_init::raw_try_init(core::ptr::from_mut(header), init)? };
+        SBufferIter::new_writer([payload_0, &mut dst.contents.1[..]]).write_all(self.payload)?;
+        dev_dbg!(
+            dev,
+            "GSP GMC: send: seq# {}, command={}, length=0x{:x}\n",
+            seq,
+            GmcCommand(self.command_id & 0x00ff_ffff),
+            self.payload.len(),
+        );
+        Ok(())
+    }
+}
+
 impl Cmdq<'_> {
+    /// Sends a GMC API command and waits for its matching response.
+    ///
+    /// Uses [`Self::RECEIVE_TIMEOUT`] as the receive timeout. Firmware rejection is returned in
+    /// [`GmcResponse::status`], not as an error.
+    ///
+    /// See [`Self::send_gmc_and_receive_timeout`] for message consumption and locking behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::send_gmc_and_receive_timeout`].
+    #[expect(dead_code)]
+    pub(crate) fn send_gmc_and_receive(
+        &self,
+        command_id: u32,
+        payload: &[u8],
+        max_response_size: u32,
+    ) -> Result<GmcResponse> {
+        self.send_gmc_and_receive_timeout(
+            command_id,
+            payload,
+            max_response_size,
+            Self::RECEIVE_TIMEOUT,
+        )
+    }
+
+    /// Sends a GMC API command and waits up to `timeout` for its matching response.
+    ///
+    /// Matches both the command ID and the request's sequence number. A nonzero firmware status
+    /// is returned in [`GmcResponse::status`]; the caller decides how to handle rejection.
+    /// `max_response_size` advertises the response payload capacity in bytes, so zero still
+    /// permits a status-only response.
+    ///
+    /// Unmatched GMC responses and events are debug-logged and consumed. Interleaved RPC messages
+    /// are logged as events and consumed. The matching response is also consumed if copying its
+    /// payload fails.
+    ///
+    /// The queue stays locked from sending through receiving. One receive deadline starts after
+    /// sending and is not extended by other messages. It does not bound waiting for the mutex or
+    /// for space to send the request.
+    ///
+    /// # Errors
+    ///
+    /// - `EMSGSIZE` if the request exceeds the command queue's maximum element size.
+    /// - `ETIMEDOUT` if space does not become available to send the request, or if the matching
+    ///   response does not arrive before the receive deadline.
+    /// - `EIO` if the command queue slot cannot hold the request headers, the receive queue is
+    ///   stalled by an invalid element, or a received element fails framing validation.
+    /// - `ENOMEM` if the response payload cannot be allocated.
+    ///
+    /// Errors from initializing the request headers are propagated as-is.
+    pub(crate) fn send_gmc_and_receive_timeout(
+        &self,
+        command_id: u32,
+        payload: &[u8],
+        max_response_size: u32,
+        timeout: Delta,
+    ) -> Result<GmcResponse> {
+        let mut inner = self.inner.lock();
+        let expected_sequence = inner.send_command_element(RawGmcCommand {
+            command_id,
+            payload,
+            max_response_size,
+        })?;
+        let dev = inner.dev;
+
+        let deadline = Instant::<Monotonic>::now() + timeout;
+        inner.await_msg_with_deadline(deadline, |message| {
+            let GspParsedMessage::Gmc(message) = message else {
+                message.log(dev);
+                return Ok(None);
+            };
+            let header = message.header();
+            let (payload_0, payload_1) = message.payload();
+            if !header.is_response_to(command_id, expected_sequence) {
+                let kind = if header.command().is_response() {
+                    "response"
+                } else {
+                    "event"
+                };
+                dev_dbg!(
+                    dev,
+                    "GSP GMC: skip {} seq {} cmd {:#x}; want response seq {} cmd {:#x}\n",
+                    kind,
+                    header.sequence(),
+                    GmcCommand::from(header.command()).0,
+                    expected_sequence,
+                    command_id,
+                );
+                return Ok(None);
+            }
+
+            // Each byte slice is at most `isize::MAX` bytes, so their sum fits in `usize`.
+            let mut payload = KVec::with_capacity(payload_0.len() + payload_1.len(), GFP_KERNEL)?;
+            payload.extend_from_slice(payload_0, GFP_KERNEL)?;
+            payload.extend_from_slice(payload_1, GFP_KERNEL)?;
+            Ok(Some(GmcResponse {
+                status: header.status().ok_or(EIO)?,
+                payload,
+            }))
+        })
+    }
+
     /// Sends `command` to the GSP and waits for the reply.
     ///
     /// GMC events that arrive before the reply are passed to `on_event`, and RPC messages are

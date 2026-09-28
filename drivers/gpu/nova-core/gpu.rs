@@ -8,6 +8,7 @@ use kernel::{
     fmt,
     gpu::buddy::GpuBuddyParams,
     io::Io,
+    new_mutex,
     num::Bounded,
     pci,
     prelude::*,
@@ -16,6 +17,7 @@ use kernel::{
         SizeConstants,
         SZ_4K, //
     },
+    sync::Mutex,
     uapi, //
 };
 
@@ -402,6 +404,7 @@ impl<'a> GspSubtree<'a> {
 #[pin_data]
 pub(crate) struct Gpu<'gpu> {
     pub(crate) spec: Spec,
+    /// Drops before the MM, BAR1 mappings and GSP needed for instance teardown.
     vgpu: Option<Pin<KBox<VgpuManager<'gpu>>>>,
     /// GSP event interrupt registration, and the enable of its subtree.
     ///
@@ -414,7 +417,8 @@ pub(crate) struct Gpu<'gpu> {
     ///
     /// Must be kept declared *before* `gsp_resources`, so that its components are dropped while
     /// the GSP is still operational.
-    mm: GpuMm<'gpu>,
+    #[pin]
+    mm: Mutex<GpuMm<'gpu>>,
     /// BAR1 user interface for CPU access to GPU virtual memory.
     #[pin]
     bar_user: BarUser<'gpu>,
@@ -540,23 +544,6 @@ impl<'gpu> Gpu<'gpu> {
                 })?,
             }),
 
-            vgpu: {
-                let info = &gsp_resources.boot_result.static_info;
-                match gsp_resources.vgpu_state {
-                    VgpuState::Disabled => None,
-                    VgpuState::Enabled { .. } => Some(KBox::pin_init(VgpuManager::new(
-                        // SAFETY: `chid_pool` is initialized above at its final pinned address.
-                        // The private manager and its pool borrow cannot escape this `Gpu`.
-                        // Completed field drop order drops the manager before the pool; on failure,
-                        // pin-init drops it before the earlier-initialized pool.
-                        unsafe { &*core::ptr::from_ref(chid_pool.as_ref().get_ref()) },
-                        &info.fifo_engine_list(),
-                        info.vmmu_segment_size,
-                        TOTAL_CHANNELS,
-                    ), GFP_KERNEL)?),
-                }
-            },
-
             _: {
                 irq::gsp::quiesce(tree_ref, &gsp_resources.gsp_falcon);
             },
@@ -602,7 +589,7 @@ impl<'gpu> Gpu<'gpu> {
             },
 
             // Create GPU memory manager owning memory management resources.
-            mm: {
+            mm <- {
                 let info = gsp_resources.static_info();
                 let usable_vram = info.usable_fb_regions.first().ok_or(ENODEV)?;
                 let buddy_params = GpuBuddyParams {
@@ -611,12 +598,15 @@ impl<'gpu> Gpu<'gpu> {
                     chunk_size: Alignment::new::<SZ_4K>(),
                 };
 
-                GpuMm::new(
-                    bar,
-                    gsp_resources.spec.chipset,
-                    buddy_params,
-                    VramAddress::from_raw(info.total_fb_end),
-                )?
+                new_mutex!(
+                    GpuMm::new(
+                        bar,
+                        gsp_resources.spec.chipset,
+                        buddy_params,
+                        VramAddress::from_raw(info.total_fb_end),
+                    )?,
+                    "nova-core::gpu-mm",
+                )
             },
 
             // Create BAR1 user interface for CPU access to GPU virtual memory.
@@ -631,6 +621,34 @@ impl<'gpu> Gpu<'gpu> {
                     bar1_size,
                     bar1,
                 )
+            },
+
+            vgpu: {
+                match gsp_resources.vgpu_state {
+                    VgpuState::Disabled => None,
+                    VgpuState::Enabled { .. } => {
+                        // SAFETY: These sibling fields are initialized at their final pinned
+                        // addresses. The private manager cannot escape this `Gpu`, and is dropped
+                        // before all its dependencies, both here on failure and on normal removal.
+                        let (cmdq, bar_user, mm, chid_pool) = unsafe {
+                            (
+                                &*core::ptr::from_ref(&gsp_resources.gsp.cmdq),
+                                &*core::ptr::from_ref(bar_user.as_ref().get_ref()),
+                                &*core::ptr::from_ref(mm.as_ref().get_ref()),
+                                &*core::ptr::from_ref(chid_pool.as_ref().get_ref()),
+                            )
+                        };
+                        Some(KBox::pin_init(VgpuManager::new(
+                            dev,
+                            cmdq,
+                            bar_user,
+                            mm,
+                            chid_pool,
+                            gsp_resources.static_info(),
+                            TOTAL_CHANNELS,
+                        ), GFP_KERNEL)?)
+                    }
+                }
             },
         })
     }
@@ -663,10 +681,11 @@ impl<'gpu> Gpu<'gpu> {
         let this = self.project();
         let dev = pdev.as_ref();
         let info = this.gsp_resources.static_info();
+        let mut mm = this.mm.lock();
 
         if let Err(err) = crate::mm::selftest::run(
             dev,
-            this.mm,
+            &mut mm,
             &info.usable_fb_regions,
             this.bar_user.as_ref().get_ref(),
             info.bar1_pde_base,

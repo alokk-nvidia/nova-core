@@ -394,8 +394,8 @@ pub(super) fn run_self_test(
     let test_vram = VramAddress::from_raw(test_vram_offset);
     let test_pfn = Pfn::from(test_vram);
 
-    // Create a VMM of size 64K to track virtual memory mappings.
-    let mut vmm = Vmm::new(pdb_addr, chipset.mmu_version(), SZ_64K.into_safe_cast())?;
+    // Page tables installed in the live BAR1 PDB must keep their owner until GPU teardown.
+    let mut vmm = bar_user.vmm.lock();
 
     // Create a test mapping.
     let mapped = vmm.map_pages(mm, &[test_pfn], None, true)?;
@@ -555,7 +555,7 @@ pub(super) fn run_self_test(
         test3_passed = false;
     }
 
-    // Release Tests 1-3's Vmm before Test 4 uses the GPU's BarUser on the same PDB.
+    // Release the lock before `BarUser::map()` acquires it again.
     drop(vmm);
 
     // Test 4: Exercise `BarUser::map()` end-to-end.

@@ -302,10 +302,8 @@ impl<'a> GmcMessage<'a> {
 /// Response from a GMC API command.
 pub(crate) struct GmcResponse {
     /// Response status (`NV_STATUS` code). Zero means success.
-    #[expect(dead_code)]
     pub(crate) status: u32,
     /// Response payload copied out of the message queue.
-    #[expect(dead_code)]
     pub(crate) payload: KVec<u8>,
 }
 
@@ -356,7 +354,6 @@ impl Cmdq<'_> {
     /// # Errors
     ///
     /// Returns the same errors as [`Self::send_gmc_and_receive_timeout`].
-    #[expect(dead_code)]
     pub(crate) fn send_gmc_and_receive(
         &self,
         command_id: u32,

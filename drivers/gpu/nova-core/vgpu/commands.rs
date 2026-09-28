@@ -28,13 +28,15 @@ use super::{
         commands::{
             VgpuPropertiesSchema, //
         },
+        RpcMessage, //
         GMCAPI_CMD_BOOTLOAD_GSP_VGPU_PLUGIN_TASK,
         GMCAPI_CMD_CLEANUP_GSP_VGPU_PLUGIN_RESOURCES,
         GMCAPI_CMD_QUERY_ASSIGNED_VF_VGPU_TYPE,
         GMCAPI_CMD_QUERY_VGPU_PROPERTIES,
         GMCAPI_CMD_SHUTDOWN_GSP_VGPU_PLUGIN_TASK,
-        GMCAPI_CMD_SHUTDOWN_GSP_VGPU_PLUGIN_TASK_COMPLETE, //
+        GMCAPI_CMD_SHUTDOWN_GSP_VGPU_PLUGIN_TASK_COMPLETE,
     },
+    gsp_plugin_rpc::PluginRpc,
     instance::Gfid, //
 };
 
@@ -159,4 +161,12 @@ pub(super) fn send_cleanup(
     check_status(dev, command_id, response.status)?;
     dev_dbg!(dev, "cleanup: gfid={} done\n", gfid.get());
     Ok(())
+}
+
+/// Negotiate the host protocol with a bootloaded GSP plugin.
+pub(super) fn negotiate_plugin_version(
+    dev: &device::Device<device::Bound>,
+    rpc: &mut PluginRpc<'_, '_>,
+) -> Result {
+    rpc.rpc_call(dev, RpcMessage::VersionNegotiation, &[])
 }

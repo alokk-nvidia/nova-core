@@ -666,7 +666,7 @@ impl<'gpu> Gpu<'gpu> {
             dev,
             this.mm,
             &info.usable_fb_regions,
-            &this.bar_user,
+            this.bar_user.as_ref().get_ref(),
             info.bar1_pde_base,
             this.spec.chipset,
         ) {

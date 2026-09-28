@@ -7,6 +7,7 @@ use kernel::prelude::*;
 use zerocopy::Immutable;
 
 use super::{
+    Array,
     Index,
     IndexedKey,
     Key,
@@ -127,6 +128,17 @@ where
         );
 
         IndexedKey::new(Index::new::<0>(), As::from(self.0)).encode(encoder)
+    }
+}
+
+impl<T, const N: usize, const KEY_ID: KeyId> Encodable for Array<T, N, KEY_ID>
+where
+    T: Default + Copy,
+    for<'a> IndexedKey<&'a [T], KEY_ID>: Encodable,
+{
+    #[inline(always)]
+    fn encode(&self, encoder: &mut Encoder) -> Result {
+        IndexedKey::<&[T], KEY_ID>::new(Index::new::<0>(), self.vec.as_slice()).encode(encoder)
     }
 }
 

@@ -26,6 +26,7 @@ use crate::gsp::{
 use super::{
     fw::{
         commands::{
+            encode_plugin_set_bme,
             VgpuPropertiesSchema, //
         },
         RpcMessage, //
@@ -178,4 +179,14 @@ pub(super) fn send_plugin_config(
     config: &[u64],
 ) -> Result {
     rpc.rpc_call_nvkv(dev, RpcMessage::SetupConfigParamsAndInit, config)
+}
+
+/// Update the bus-mastering state reported to the GSP plugin.
+pub(super) fn set_plugin_bme(
+    dev: &device::Device<device::Bound>,
+    rpc: &mut PluginRpc<'_, '_>,
+    enable: bool,
+) -> Result {
+    let bme = encode_plugin_set_bme(enable)?;
+    rpc.rpc_call_nvkv(dev, RpcMessage::UpdateBmeState, &bme)
 }

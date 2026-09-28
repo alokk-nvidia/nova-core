@@ -27,6 +27,16 @@ use crate::{
     mm::vram::VramRegion, //
 };
 
+use super::bindings;
+
+/// Message types supported by the nova-core plugin RPC channel.
+#[expect(dead_code)]
+#[derive(Clone, Copy)]
+#[repr(u32)]
+pub(crate) enum RpcMessage {
+    VersionNegotiation = bindings::MESSAGE_NV_VGPU_CPU_RPC_MSG_VERSION_NEGOTIATION,
+}
+
 bitfield! {
     pub(crate) struct Dbdf(u32) {
         2:0 function;

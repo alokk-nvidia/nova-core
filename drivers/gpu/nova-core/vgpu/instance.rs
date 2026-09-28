@@ -20,6 +20,7 @@ use kernel::{
 };
 
 use crate::{
+    driver::Bar0,
     gpu::ChannelIdReservation,
     gsp::{
         cmdq::Cmdq,
@@ -41,6 +42,7 @@ use super::{
         ChannelMapEntry, //
     },
     gsp_plugin_comm::CommBufferRegion,
+    gsp_plugin_rpc::PluginRpc,
     vram::{
         VgpuVramLayout,
         VgpuVramSlot,
@@ -141,7 +143,7 @@ struct VgpuInstance<'gpu> {
     vgpu_type: VgpuType,
     vm_pid: u32,
     num_plugin_channels: u32,
-    comm: CommBufferRegion<'gpu, 'gpu>,
+    plugin_rpc: PluginRpc<'gpu, 'gpu>,
     // Unmap the communication region before returning its slot and channel IDs.
     vram_slot: VgpuVramSlot,
     chids: ChannelIdReservation<'gpu>,
@@ -170,7 +172,7 @@ impl<'gpu> VgpuInstance<'gpu> {
                 send_cleanup(vgpu.dev, vgpu.cmdq, self.gfid)?;
                 self.needs_teardown = false;
             }
-            self.comm.unmap()
+            self.plugin_rpc.unmap()
         })();
         if let Err(error) = result {
             self.failure = Some(error);
@@ -187,7 +189,7 @@ impl<'gpu> VgpuInstance<'gpu> {
     ) -> Result {
         let fb = &self.vram_slot.fbmem;
         let mgmt = &self.vram_slot.mgmt_heap;
-        let logs = self.comm.plugin_logs();
+        let logs = self.plugin_rpc.comm().plugin_logs();
 
         let payload = encode_vgpu_bootload(BootloadInfo {
             dbdf: self.dbdf,
@@ -215,11 +217,11 @@ impl<'gpu> VgpuInstance<'gpu> {
             payload.len() * size_of::<u64>(),
         );
 
-        self.comm.clear_plugin_ready()?;
+        self.plugin_rpc.comm().clear_plugin_ready()?;
         self.needs_teardown = true;
         send_bootload(dev, cmdq, &payload)?;
 
-        wait_plugin_ready(dev, &self.comm)?;
+        wait_plugin_ready(dev, self.plugin_rpc.comm())?;
 
         dev_dbg!(dev, "bootload: gfid={} plugin ready\n", self.gfid.get());
         Ok(())
@@ -293,6 +295,7 @@ impl<'gpu> VgpuInstances<'gpu> {
     fn allocate_instance<'a>(
         &'a mut self,
         vgpu: &'a VgpuManager<'gpu>,
+        bar0: Bar0<'gpu>,
         info: InstanceInfo,
     ) -> Result<PendingInstance<'a, 'gpu>> {
         let InstanceInfo {
@@ -351,7 +354,7 @@ impl<'gpu> VgpuInstances<'gpu> {
             vgpu_type,
             vm_pid,
             num_plugin_channels: PLUGIN_CHANNELS_PER_ENGINE,
-            comm,
+            plugin_rpc: PluginRpc::new(comm, bar0, gfid),
             vram_slot,
             chids,
             needs_teardown: false,

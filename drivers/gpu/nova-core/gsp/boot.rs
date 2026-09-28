@@ -528,7 +528,7 @@ impl<'gsp> super::Gsp<'gsp> {
         };
         let static_info = self
             .cmdq
-            .send_gmc_command(GspInit::new(pdev, chipset, ctx.vgpu.state())?, |event| {
+            .send_gmc_command(GspInit::new(ctx)?, |event| {
                 load_exec.dispatch_gmc_boot_event(event)
             })?;
 

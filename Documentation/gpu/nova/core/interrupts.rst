@@ -582,7 +582,8 @@ command reply or an unsolicited event, and the two differ in the function code.
   arrival with its sequence number, function code, and length.
 * A GMC message carries a command id in place of a function code. The
   ``GSP_INIT`` wait and synchronous GMC transactions claim responses with the
-  expected command id and sequence number. These waits consume interleaved RPC
+  expected command id and sequence number. A GMC completion-event wait uses its
+  caller's predicate to select an event. These waits consume interleaved RPC
   messages as events. Unmatched GMC messages are handled by the wait's callback
   or logged and consumed; a queue drain with no waiting caller logs unclaimed
   responses and unknown commands at warning level and drops them.
@@ -607,9 +608,9 @@ mutex. Replies and events share one queue and one read pointer, so one lock is
 held across the whole drain. A thread waiting for a reply logs each event that
 arrives before the reply and keeps waiting. One receive deadline applies to
 all messages in the wait. The default timeout is 5 seconds; GMC transactions
-can specify another timeout. For send-and-wait operations the receive deadline
-starts after sending, so it does not bound waiting for the mutex or for
-command-queue space. The thread holds the mutex from sending through receiving,
+and completion-event waits can specify another timeout. For send-and-wait
+operations the receive deadline starts after sending, so it does not bound
+waiting for the mutex or for command-queue space. The thread holds the mutex from sending through receiving,
 so no other caller consumes the message it waits for.
 
 With one lock, a drain waits for an in-flight command's receive to finish or

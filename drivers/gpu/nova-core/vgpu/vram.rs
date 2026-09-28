@@ -116,7 +116,6 @@ pub(super) struct VgpuVramSlotAllocator {
     slot_bitmap: Arc<SlotBitmap>,
 }
 
-#[expect(dead_code)]
 impl VgpuVramSlotAllocator {
     pub(super) fn new(mm: &GpuMm<'_>, layout: VgpuVramLayout) -> Result<Self> {
         let layout = layout.validated()?;

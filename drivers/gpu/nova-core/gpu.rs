@@ -52,7 +52,7 @@ use crate::{
         GpuMm,
         VramAddress, //
     },
-    vgpu::VgpuManager, //
+    vgpu::VgpuState, //
 };
 
 #[cfg_attr(not(CONFIG_KUNIT = "y"), expect(dead_code))]
@@ -338,7 +338,7 @@ struct GspResources<'gpu> {
     // generic against them.
     fsp: Option<Fsp<'gpu>>,
     /// vGPU state detected before GSP boot.
-    vgpu: VgpuManager,
+    vgpu_state: VgpuState,
     /// GSP runtime data.
     #[pin]
     gsp: Gsp<'gpu>,
@@ -447,7 +447,7 @@ impl PinnedDrop for GspResources<'_> {
                     gsp_falcon: &*this.gsp_falcon,
                     sec2_falcon: &*this.sec2_falcon,
                     fsp: this.fsp.as_mut(),
-                    vgpu: &*this.vgpu,
+                    vgpu_state: *this.vgpu_state,
                 },
                 bundle,
             )
@@ -508,7 +508,7 @@ impl<'gpu> Gpu<'gpu> {
 
                 fsp: Fsp::try_new(dev, bar, spec.chipset)?,
 
-                vgpu: VgpuManager::new(pdev, spec.chipset, fsp.as_mut()),
+                vgpu_state: VgpuState::new(pdev, spec.chipset, fsp.as_mut()),
 
                 gsp <- Gsp::new(pdev, *spec, bar),
 
@@ -522,7 +522,7 @@ impl<'gpu> Gpu<'gpu> {
                     gsp_falcon,
                     sec2_falcon,
                     fsp: fsp.as_mut(),
-                    vgpu,
+                    vgpu_state: *vgpu_state,
                 })?,
             }),
 

@@ -30,13 +30,10 @@ pub(crate) enum VgpuState {
     },
 }
 
-/// vGPU state manager.
-pub(crate) struct VgpuManager {
-    state: VgpuState,
-}
-
-impl VgpuManager {
-    /// Creates a vGPU manager by querying SR-IOV and the FSP PRC vGPU knob.
+impl VgpuState {
+    /// Detects the boot mode, falling back to disabled if querying the device fails.
+    ///
+    /// Call after creating the FSP and before allocating GSP firmware resources.
     pub(crate) fn new(
         pdev: &pci::Device<device::Core<'_>>,
         chipset: Chipset,
@@ -51,8 +48,7 @@ impl VgpuManager {
             VgpuState::Disabled
         });
         dev_dbg!(pdev, "vGPU state: {:?}\n", state);
-
-        Self { state }
+        state
     }
 
     /// Detects the vGPU state from the chipset, SR-IOV capability and FSP PRC knob.
@@ -82,10 +78,5 @@ impl VgpuManager {
             VgpuMode::Enabled => Ok(VgpuState::Enabled { total_vfs }),
             VgpuMode::Disabled => Ok(VgpuState::Disabled),
         }
-    }
-
-    /// Returns the detected vGPU state for this boot.
-    pub(crate) fn state(&self) -> VgpuState {
-        self.state
     }
 }

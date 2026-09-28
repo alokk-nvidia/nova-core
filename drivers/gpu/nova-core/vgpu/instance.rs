@@ -34,10 +34,12 @@ use super::{
         negotiate_plugin_version,
         send_bootload,
         send_cleanup,
+        send_plugin_config,
         send_shutdown,
         Dbdf, //
     },
     fw::commands::{
+        encode_plugin_config_params,
         encode_vgpu_bootload,
         BootloadInfo,
         ChannelMapEntry, //
@@ -159,6 +161,7 @@ impl<'gpu> VgpuInstance<'gpu> {
         self.bootload(dev, vgpu.cmdq, &vgpu.fifo_engine_list)?;
         self.plugin_rpc.init_rpc()?;
         negotiate_plugin_version(dev, &mut self.plugin_rpc)?;
+        self.configure_plugin(dev)?;
 
         Ok(())
     }
@@ -228,6 +231,19 @@ impl<'gpu> VgpuInstance<'gpu> {
 
         dev_dbg!(dev, "bootload: gfid={} plugin ready\n", self.gfid.get());
         Ok(())
+    }
+
+    fn configure_plugin(&mut self, dev: &device::Device<device::Bound>) -> Result {
+        let config = encode_plugin_config_params(
+            [0; 16],
+            self.dbdf,
+            self.vgpu_type.vgpu_type_id,
+            self.vm_pid,
+            u32::try_from(self.chids.len()).map_err(|_| EOVERFLOW)?,
+            self.num_plugin_channels,
+        )?;
+
+        send_plugin_config(dev, &mut self.plugin_rpc, &config)
     }
 
     /// Stop the plugin when firmware may own instance resources.

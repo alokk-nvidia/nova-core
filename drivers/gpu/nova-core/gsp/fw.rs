@@ -834,8 +834,8 @@ impl GmcApiHeader {
     /// Creates the header of a request for `command`, sent with sequence number `sequence` and
     /// followed by `payload_size` bytes of payload.
     ///
-    /// `max_reply_size` is the largest reply the sender accepts, and zero for a request that
-    /// GSP-RM does not answer.
+    /// `max_reply_size` is the response payload capacity in bytes. Zero permits a status-only
+    /// response; whether GSP-RM sends a reply is determined by the command protocol.
     ///
     /// # Errors
     ///
@@ -846,8 +846,21 @@ impl GmcApiHeader {
         payload_size: usize,
         max_reply_size: u32,
     ) -> impl Init<Self, Error> {
+        // CAST: `GmcCommandId` is `repr(u32)`, so this cast is lossless.
+        Self::init_raw(command as u32, sequence, payload_size, max_reply_size)
+    }
+
+    /// Creates a request header for a runtime command ID, masking off command flags.
+    ///
+    /// Returns `EOVERFLOW` if `payload_size` does not fit its 32-bit field.
+    pub(super) fn init_raw(
+        command: u32,
+        sequence: u64,
+        payload_size: usize,
+        max_reply_size: u32,
+    ) -> impl Init<Self, Error> {
         let init_inner = try_init!(bindings::GMCAPI_HEADER {
-            command: GmcCommandWord::zeroed().with_id(command).into(),
+            command: command & 0x00ff_ffff,
             size: payload_size.try_into().map_err(|_| EOVERFLOW)?,
             sequence,
             __bindgen_anon_1: bindings::GMCAPI_HEADER__bindgen_ty_1 {
@@ -861,6 +874,13 @@ impl GmcApiHeader {
         try_init!(GmcApiHeader {
             inner <- init_inner,
         })
+    }
+
+    /// Matches the response flag, low 24 command-ID bits, and full request sequence number.
+    pub(crate) fn is_response_to(&self, command_id: u32, sequence: u32) -> bool {
+        self.command().is_response()
+            && GmcCommand::from(self.command()).0 == (command_id & 0x00ff_ffff)
+            && self.sequence() == u64::from(sequence)
     }
 
     /// Returns the `command` word of the header.

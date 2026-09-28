@@ -186,6 +186,7 @@ impl MessageFromGsp for GspStaticInfo {
             usable_fb_regions,
             total_fb_end: reply.total_fb_end().ok_or(EINVAL)?,
             fifo_engine_list: reply.fifo_engine_list(),
+            vmmu_segment_size: reply.vmmu_segment_size,
         })
     }
 }

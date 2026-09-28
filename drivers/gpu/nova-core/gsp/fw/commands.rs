@@ -378,7 +378,7 @@ pub(crate) struct GspInitResponse {
     gpu_gid: ArrayVec<u8, { GspStaticInfo::GID_LEN }>,
     fb_regions: KVVec<FbRegion>,
     bar1_pde_base: u64,
-    vmmu_segment_size: u64,
+    pub(crate) vmmu_segment_size: u64,
     fifo_engine_count: FifoEngineCount,
     fifo_engine_gmc_ids: [u32; MAX_FIFO_ENGINES],
     fifo_engine_flags: [u32; MAX_FIFO_ENGINES],

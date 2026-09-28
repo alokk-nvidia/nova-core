@@ -7,6 +7,10 @@ use kernel::{
     io::Io,
     new_mutex,
     prelude::*,
+    ptr::{
+        Alignable,
+        Alignment, //
+    },
     sync::Mutex, //
 };
 
@@ -18,6 +22,7 @@ use crate::{
             MappedRange,
             Vmm, //
         },
+        vram::VramRegion,
         GpuMm,
         Pfn,
         Vfn,
@@ -177,6 +182,146 @@ impl Drop for BarUserAccess<'_, '_> {
         }
         // The inner `MappedRange`'s own `MustUnmapGuard` will also fire,
         // identifying the leaked VA range.
+    }
+}
+
+/// A BAR mapping that retains its backing VRAM region.
+#[must_use]
+pub(crate) struct BarMapping<'map, 'gpu> {
+    access: BarUserAccess<'map, 'gpu>,
+    mm: &'map Mutex<GpuMm<'gpu>>,
+    region: VramRegion,
+    region_offset: usize,
+    region_size: usize,
+    unmap_error: Option<Error>,
+}
+
+#[expect(dead_code)]
+impl<'map, 'gpu> BarMapping<'map, 'gpu> {
+    /// Maps the containing pages while restricting CPU access to the requested byte range.
+    pub(crate) fn new(
+        bar_user: &'map BarUser<'gpu>,
+        mm: &'map Mutex<GpuMm<'gpu>>,
+        region: VramRegion,
+        writable: bool,
+    ) -> Result<Self> {
+        let page_size: u64 = PAGE_SIZE.into_safe_cast();
+        let page_align = Alignment::new::<PAGE_SIZE>();
+
+        let region_start = region.address();
+        let region_end = region_start.checked_add(region.size()).ok_or(EOVERFLOW)?;
+
+        let map_start = region_start.align_down(page_align);
+        let map_end = region_end.align_up(page_align).ok_or(EOVERFLOW)?;
+        let map_size = map_end.checked_sub(map_start).ok_or(EINVAL)?;
+        let num_pages = usize::try_from(map_size / page_size).map_err(|_| EOVERFLOW)?;
+        if num_pages == 0 {
+            return Err(EINVAL);
+        }
+
+        let region_offset = usize::try_from(region_start - map_start).map_err(|_| EOVERFLOW)?;
+        let region_size = usize::try_from(region.size()).map_err(|_| EOVERFLOW)?;
+
+        let mut pfns = KVec::with_capacity(num_pages, GFP_KERNEL)?;
+        for page in 0..num_pages {
+            let page = u64::try_from(page).map_err(|_| EOVERFLOW)?;
+            let byte_offset = page.checked_mul(page_size).ok_or(EOVERFLOW)?;
+            let address = map_start.checked_add(byte_offset).ok_or(EOVERFLOW)?;
+            pfns.push(Pfn::from(VramAddress::from_raw(address)), GFP_KERNEL)?;
+        }
+
+        let access = bar_user.map(&mut mm.lock(), &pfns, writable)?;
+
+        Ok(Self {
+            access,
+            mm,
+            region,
+            region_offset,
+            region_size,
+            unmap_error: None,
+        })
+    }
+
+    pub(crate) fn region(&self) -> &VramRegion {
+        &self.region
+    }
+
+    pub(crate) fn gpu_va_addr(&self) -> Result<u64> {
+        self.access()?
+            .base()
+            .into_raw()
+            .checked_add(u64::try_from(self.region_offset).map_err(|_| EOVERFLOW)?)
+            .ok_or(EOVERFLOW)
+    }
+
+    pub(crate) const fn size(&self) -> usize {
+        self.region_size
+    }
+
+    fn access(&self) -> Result<&BarUserAccess<'map, 'gpu>> {
+        if self.access.mapped.is_none() {
+            return Err(ENODEV);
+        }
+        if let Some(error) = self.unmap_error {
+            return Err(error);
+        }
+        Ok(&self.access)
+    }
+
+    fn access_offset(&self, offset: usize, width: usize) -> Result<usize> {
+        let region_end = offset.checked_add(width).ok_or(EOVERFLOW)?;
+        if region_end > self.region_size {
+            return Err(EINVAL);
+        }
+
+        let access_offset = self.region_offset.checked_add(offset).ok_or(EOVERFLOW)?;
+        if !access_offset.is_multiple_of(width) {
+            return Err(EINVAL);
+        }
+
+        Ok(access_offset)
+    }
+
+    pub(crate) fn try_read32(&self, offset: usize) -> Result<u32> {
+        self.access()?
+            .try_read32(self.access_offset(offset, size_of::<u32>())?)
+    }
+
+    pub(crate) fn try_write32(&self, value: u32, offset: usize) -> Result {
+        self.access()?
+            .try_write32(value, self.access_offset(offset, size_of::<u32>())?)
+    }
+
+    pub(crate) fn try_write64(&self, value: u64, offset: usize) -> Result {
+        self.access()?
+            .try_write64(value, self.access_offset(offset, size_of::<u64>())?)
+    }
+
+    /// Unmap while retaining the mapping and its backing storage on failure.
+    ///
+    /// The first error is retained; later calls do not retry the operation.
+    pub(crate) fn unmap(&mut self) -> Result {
+        if let Some(error) = self.unmap_error {
+            return Err(error);
+        }
+        let result = self.access.unmap(&mut self.mm.lock());
+        if let Err(error) = result {
+            self.unmap_error = Some(error);
+        }
+        result
+    }
+}
+
+impl Drop for BarMapping<'_, '_> {
+    /// Drop unmaps the region and may sleep. Call [`Self::unmap`] to observe errors;
+    /// on failure the owner must retain this object until device teardown.
+    fn drop(&mut self) {
+        if self.unmap_error.is_some() {
+            return;
+        }
+        if let Err(error) = self.unmap() {
+            kernel::pr_err!("failed to unmap BAR1 region: {:?}\n", error);
+        }
     }
 }
 

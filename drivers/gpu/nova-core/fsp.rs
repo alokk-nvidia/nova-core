@@ -20,7 +20,7 @@ use kernel::{
         Alignable,
         Alignment, //
     },
-    sizes::SZ_2M,
+    sizes::SizeConstants,
     time::Delta,
     transmute::{
         AsBytes,
@@ -260,7 +260,7 @@ impl FspCotMessage {
             offset = (offset + u64::from(fb_info.pmu_reserved_size))
                 // This must be aligned to WPR alignment, which is 128 KiB, and must also be at
                 // least 128 KiB. 2 MiB satisfies both.
-                .align_up(Alignment::new::<SZ_2M>())
+                .align_up(Alignment::SZ_2M)
                 .ok_or(EINVAL)?;
         }
 

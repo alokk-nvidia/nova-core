@@ -89,7 +89,7 @@ const PMU_SURFACES_SIZE: usize = SZ_16M + SZ_256K;
 const PMU_MISC_SIZE: usize = SZ_4K;
 
 /// Alignment of the PMU reserved region, `KPMU_RESERVED_MEMORY_ALIGNMENT` in OpenRM.
-const PMU_RESERVED_MEMORY_ALIGNMENT: Alignment = Alignment::new::<SZ_128K>();
+const PMU_RESERVED_MEMORY_ALIGNMENT: Alignment = Alignment::SZ_128K;
 
 /// PMU region above FRTS: the backing store, the surfaces and the miscellaneous memory, aligned to
 /// [`PMU_RESERVED_MEMORY_ALIGNMENT`].

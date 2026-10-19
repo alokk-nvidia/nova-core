@@ -229,6 +229,38 @@ const REGISTRY_ENTRIES: &[(&[u8], u32)] = &[
 ];
 
 impl GspInitRequest {
+    fn build_vf_info(
+        dev: &pci::Device<device::Bound>,
+        vgpu_state: VgpuState,
+    ) -> Result<Option<VfInfo>> {
+        let total_vfs = match vgpu_state {
+            VgpuState::Disabled => return Ok(None),
+            VgpuState::Enabled { total_vfs } => total_vfs,
+        };
+
+        let sriov = dev
+            .config_space_extended()?
+            .find_ext_capability::<pci::ExtSriovRegs>()?
+            .ok_or(ENODEV)?;
+
+        let mut vf_bars = sriov.vf_bars()?;
+        let bar0 = vf_bars.next().ok_or(EINVAL)?;
+        let bar1 = vf_bars.next().ok_or(EINVAL)?;
+        let bar2 = vf_bars.next().ok_or(EINVAL)?;
+        let flags = u64::from(bar0.is_64bit)
+            | (u64::from(bar1.is_64bit) << 1)
+            | (u64::from(bar2.is_64bit) << 2);
+
+        Ok(Some(VfInfo {
+            total_vfs: u32::from(total_vfs.get()).into(),
+            first_vf_offset: u32::from(sriov.first_vf_offset()).into(),
+            flags: flags.into(),
+            first_bar0_address: bar0.address.into(),
+            first_bar1_address: bar1.address.into(),
+            first_bar2_address: bar2.address.into(),
+        }))
+    }
+
     /// Creates the request for `dev`.
     ///
     /// The registry keys are [`REGISTRY_ENTRIES`], plus `RMSetSriovMode` when `vgpu_state` reports
@@ -237,6 +269,9 @@ impl GspInitRequest {
     /// # Errors
     ///
     /// - `ENOMEM` if the registry list cannot be allocated.
+    /// - `ENODEV` if vGPU mode is enabled but the SR-IOV capability is missing.
+    ///
+    /// Errors reading the PCI configuration or decoding the VF BAR layout are propagated as-is.
     pub(crate) fn new(
         dev: &pci::Device<device::Bound>,
         chipset: Chipset,
@@ -269,7 +304,7 @@ impl GspInitRequest {
             host_arch: HostArch::host().into(),
             bus_device_func: u64::from(bus_device_func).into(),
             regkeys,
-            vf_info: None,
+            vf_info: Self::build_vf_info(dev, vgpu_state)?,
         })
     }
 }

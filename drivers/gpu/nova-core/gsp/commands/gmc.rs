@@ -57,6 +57,9 @@ impl GspInit {
     /// # Errors
     ///
     /// - `ENOMEM` if the request or the encoder buffer cannot be allocated.
+    /// - `ENODEV` if vGPU mode is enabled but the SR-IOV capability is missing.
+    ///
+    /// Errors reading the PCI configuration or decoding the VF BAR layout are propagated as-is.
     pub(crate) fn new(
         pdev: &pci::Device<device::Bound>,
         chipset: Chipset,

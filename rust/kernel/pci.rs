@@ -112,6 +112,10 @@ unsafe impl<T: Driver> driver::RegistrationOps for Adapter<T> {
             if T::HAS_ERROR_DETECTED || T::HAS_RESET_PREPARE || T::HAS_RESET_DONE {
                 (*pdrv.get()).err_handler = &Self::ERROR_HANDLERS;
             }
+            #[cfg(CONFIG_PM)]
+            if let Some(ops) = T::PM_OPS {
+                (*pdrv.get()).driver.pm = ops.raw;
+            }
             #[cfg(CONFIG_PCI_IOV)]
             if T::HAS_SRIOV_ENABLE {
                 (*pdrv.get()).sriov_configure = Some(Self::sriov_configure_callback);
@@ -259,6 +263,72 @@ impl<T: Driver> Adapter<T> {
         resume: None,
         cor_error_detected: None,
     };
+}
+
+#[cfg(CONFIG_PM)]
+impl<T: Driver> Adapter<T>
+where
+    for<'a> T::Data<'a>: Sync,
+{
+    extern "C" fn runtime_suspend_callback(dev: *mut bindings::device) -> c_int {
+        // SAFETY: PCI supplies its embedded device; runtime PM excludes driver-data removal.
+        let pdev =
+            unsafe { &*container_of!(dev, bindings::pci_dev, dev).cast::<Device<device::Bound>>() };
+        // SAFETY: Runtime PM keeps installed data alive; `T::Data: Sync` permits shared borrows.
+        let result =
+            unsafe { Self::callback_data_with(dev, |data| T::runtime_suspend(pdev, data)) }
+                .unwrap_or(Err(EBUSY));
+        match result {
+            Ok(()) => 0,
+            Err(error) => error.to_errno(),
+        }
+    }
+
+    extern "C" fn runtime_resume_callback(dev: *mut bindings::device) -> c_int {
+        // SAFETY: PCI supplies its embedded device; runtime PM excludes driver-data removal.
+        let pdev =
+            unsafe { &*container_of!(dev, bindings::pci_dev, dev).cast::<Device<device::Bound>>() };
+        // SAFETY: Runtime PM keeps installed data alive; `T::Data: Sync` permits shared borrows.
+        let result = unsafe { Self::callback_data_with(dev, |data| T::runtime_resume(pdev, data)) }
+            .unwrap_or(Err(ENODEV));
+        match result {
+            Ok(()) => 0,
+            Err(error) => error.to_errno(),
+        }
+    }
+
+    const PM_OPS: bindings::dev_pm_ops = bindings::dev_pm_ops {
+        runtime_suspend: Some(Self::runtime_suspend_callback),
+        runtime_resume: Some(Self::runtime_resume_callback),
+        ..pin_init::zeroed()
+    };
+}
+
+/// Runtime PM callbacks for PCI driver `T`, installed through [`Driver::PM_OPS`].
+#[cfg(CONFIG_PM)]
+pub struct PmOps<T: ?Sized> {
+    raw: &'static bindings::dev_pm_ops,
+    // Invariant in `T`, so subtyping can't pass one driver's callbacks off as another's.
+    _driver: PhantomData<fn(&T) -> &T>,
+}
+
+#[cfg(CONFIG_PM)]
+impl<T: Driver> PmOps<T>
+where
+    for<'a> T::Data<'a>: Sync,
+{
+    /// Returns the runtime PM callbacks for `T`, which must override both PM methods.
+    #[expect(clippy::new_without_default)]
+    pub const fn new() -> Self {
+        const_assert!(
+            T::HAS_RUNTIME_SUSPEND && T::HAS_RUNTIME_RESUME,
+            "PCI runtime PM requires both runtime_suspend and runtime_resume"
+        );
+        Self {
+            raw: &Adapter::<T>::PM_OPS,
+            _driver: PhantomData,
+        }
+    }
 }
 
 /// Declares a kernel module that exposes a single PCI driver.
@@ -425,6 +495,9 @@ pub trait Driver {
     type IdInfo: 'static;
 
     /// The type of the driver's bus device private data.
+    ///
+    /// Callbacks access this data under the PCI device lock, except runtime PM callbacks,
+    /// which additionally require [`Sync`].
     type Data<'bound>: Send + 'bound;
 
     /// The table of device ids supported by the driver.
@@ -461,6 +534,9 @@ pub trait Driver {
     /// operations to gracefully tear down the device.
     ///
     /// Otherwise, release operations for driver resources should be performed in `Drop`.
+    ///
+    /// PCI has drained runtime-PM work before this callback. Driver data remains installed
+    /// until this callback returns.
     fn unbind<'bound>(dev: &'bound Device<device::Core<'_>>, this: Pin<&Self::Data<'bound>>) {
         let _ = (dev, this);
     }
@@ -486,6 +562,33 @@ pub trait Driver {
         let _ = (dev, this, state);
         build_error!(crate::error::VTABLE_DEFAULT_ERROR)
     }
+
+    /// Prepare for runtime suspend, without holding the PCI device lock.
+    #[cfg(CONFIG_PM)]
+    fn runtime_suspend<'bound>(
+        dev: &Device<device::Bound>,
+        this: Pin<&Self::Data<'bound>>,
+    ) -> Result
+    where
+        for<'a> Self::Data<'a>: Sync,
+    {
+        let _ = (dev, this);
+        build_error!(crate::error::VTABLE_DEFAULT_ERROR)
+    }
+
+    /// Finish runtime resume, without holding the PCI device lock.
+    #[cfg(CONFIG_PM)]
+    fn runtime_resume<'bound>(dev: &Device<device::Bound>, this: Pin<&Self::Data<'bound>>) -> Result
+    where
+        for<'a> Self::Data<'a>: Sync,
+    {
+        let _ = (dev, this);
+        build_error!(crate::error::VTABLE_DEFAULT_ERROR)
+    }
+
+    /// Runtime PM callbacks, if any. Construct with [`PmOps::new`].
+    #[cfg(CONFIG_PM)]
+    const PM_OPS: Option<PmOps<Self>> = None;
 
     /// Enables Single Root I/O Virtualization (SR-IOV) for a PF.
     ///

@@ -147,6 +147,8 @@ pub mod types;
 pub mod uaccess;
 #[cfg(CONFIG_USB = "y")]
 pub mod usb;
+#[cfg(CONFIG_VFIO)]
+pub mod vfio;
 pub mod workqueue;
 pub mod xarray;
 

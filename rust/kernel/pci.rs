@@ -109,6 +109,9 @@ unsafe impl<T: Driver> driver::RegistrationOps for Adapter<T> {
             (*pdrv.get()).remove = Some(Self::remove_callback);
             (*pdrv.get()).id_table = T::ID_TABLE.as_ptr();
             (*pdrv.get()).driver_managed_dma = T::DRIVER_MANAGED_DMA;
+            if T::HAS_RESET_PREPARE || T::HAS_RESET_DONE {
+                (*pdrv.get()).err_handler = &Self::ERROR_HANDLERS;
+            }
             #[cfg(CONFIG_PCI_IOV)]
             if T::HAS_SRIOV_ENABLE {
                 (*pdrv.get()).sriov_configure = Some(Self::sriov_configure_callback);
@@ -175,6 +178,61 @@ impl<T: Driver> Adapter<T> {
         // Drop private data before returning to PCI core, while its removal context is valid.
         drop(data);
     }
+
+    /// # Safety
+    ///
+    /// `dev` must belong to `T`. Any installed driver data must remain installed until this
+    /// call returns. The data lifetime is independent of the callback borrow.
+    unsafe fn callback_data_with<R>(
+        dev: *mut bindings::device,
+        f: impl for<'borrow, 'data> FnOnce(Pin<&'borrow T::Data<'data>>) -> R,
+    ) -> Option<R> {
+        // SAFETY: The callback supplies a device bound to `T`.
+        let data = unsafe { bindings::dev_get_drvdata(dev) };
+        if data.is_null() {
+            return None;
+        }
+        // SAFETY: PCI installed pinned `T::Data`; the caller excludes its removal.
+        Some(f(unsafe {
+            Pin::new_unchecked(&*data.cast::<T::Data<'_>>())
+        }))
+    }
+
+    extern "C" fn reset_prepare_callback(pdev: *mut bindings::pci_dev) {
+        // SAFETY: PCI holds the device lock throughout reset.
+        let dev = unsafe { &*pdev.cast::<Device<device::CoreInternal<'_>>>() };
+        // SAFETY: The device lock prevents removal of installed driver data.
+        let _ = unsafe {
+            Self::callback_data_with(&raw mut (*pdev).dev, |data| T::reset_prepare(dev, data))
+        };
+    }
+
+    extern "C" fn reset_done_callback(pdev: *mut bindings::pci_dev) {
+        // SAFETY: PCI holds the device lock throughout reset.
+        let dev = unsafe { &*pdev.cast::<Device<device::CoreInternal<'_>>>() };
+        // SAFETY: The device lock prevents removal of installed driver data.
+        let _ = unsafe {
+            Self::callback_data_with(&raw mut (*pdev).dev, |data| T::reset_done(dev, data))
+        };
+    }
+
+    const ERROR_HANDLERS: bindings::pci_error_handlers = bindings::pci_error_handlers {
+        error_detected: None,
+        mmio_enabled: None,
+        slot_reset: None,
+        reset_prepare: if T::HAS_RESET_PREPARE {
+            Some(Self::reset_prepare_callback)
+        } else {
+            None
+        },
+        reset_done: if T::HAS_RESET_DONE {
+            Some(Self::reset_done_callback)
+        } else {
+            None
+        },
+        resume: None,
+        cor_error_detected: None,
+    };
 }
 
 /// Declares a kernel module that exposes a single PCI driver.
@@ -370,6 +428,18 @@ pub trait Driver {
     /// Otherwise, release operations for driver resources should be performed in `Drop`.
     fn unbind<'bound>(dev: &'bound Device<device::Core<'_>>, this: Pin<&Self::Data<'bound>>) {
         let _ = (dev, this);
+    }
+
+    /// Called before a PCI function reset, with the device lock held.
+    fn reset_prepare<'bound>(dev: &Device<device::Core<'_>>, this: Pin<&Self::Data<'bound>>) {
+        let _ = (dev, this);
+        build_error!(crate::error::VTABLE_DEFAULT_ERROR)
+    }
+
+    /// Called after a PCI function reset, with the device lock held.
+    fn reset_done<'bound>(dev: &Device<device::Core<'_>>, this: Pin<&Self::Data<'bound>>) {
+        let _ = (dev, this);
+        build_error!(crate::error::VTABLE_DEFAULT_ERROR)
     }
 
     /// Enables Single Root I/O Virtualization (SR-IOV) for a PF.

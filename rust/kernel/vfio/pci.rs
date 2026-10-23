@@ -10,8 +10,19 @@
 //! C header: [`include/linux/vfio_pci_core.h`](srctree/include/linux/vfio_pci_core.h)
 
 use super::{
+    CallbackData,
     InfoCap,
     UserBuf, //
+};
+pub use super::{
+    DeviceContext,
+    GetRegionInfo,
+    Ioctl,
+    Mmap,
+    Normal,
+    Open,
+    Read,
+    Write, //
 };
 
 use crate::{
@@ -39,60 +50,15 @@ use crate::{
 };
 use core::{
     alloc::Layout,
-    cell::UnsafeCell,
     marker::PhantomData,
     ptr::NonNull, //
 };
 
+/// Reset the PCI slot or bus containing a VFIO device.
+pub const DEVICE_PCI_HOT_RESET: u32 = bindings::VFIO_DEVICE_PCI_HOT_RESET;
+
 /// Index of the PCI configuration-space region.
 pub const CONFIG_REGION_INDEX: u32 = bindings::VFIO_PCI_CONFIG_REGION_INDEX;
-
-/// The context in which a VFIO PCI device reference is valid.
-///
-/// Callback views can only be borrowed from the corresponding VFIO trampoline.
-/// They cannot be refcounted or shared across threads.
-pub trait DeviceContext: private::Sealed {}
-
-/// An ordinary device reference, without callback-specific operations.
-pub struct Normal;
-
-/// The device is enabled but has not yet completed its first-open callback.
-pub struct Open;
-
-/// The device is borrowed for a VFIO ioctl callback on the current thread.
-pub struct Ioctl;
-
-/// The device is borrowed for a VFIO read callback on the current thread.
-pub struct Read;
-
-/// The device is borrowed for a VFIO write callback on the current thread.
-pub struct Write;
-
-/// The device is borrowed for a VFIO mmap callback on the current thread.
-pub struct Mmap;
-
-/// The device is borrowed for a VFIO region-info callback on the current thread.
-pub struct GetRegionInfo;
-
-mod private {
-    pub trait Sealed {}
-
-    impl Sealed for super::Normal {}
-    impl Sealed for super::Open {}
-    impl Sealed for super::Write {}
-    impl Sealed for super::Mmap {}
-    impl Sealed for super::Ioctl {}
-    impl Sealed for super::Read {}
-    impl Sealed for super::GetRegionInfo {}
-}
-
-impl DeviceContext for Normal {}
-impl DeviceContext for Open {}
-impl DeviceContext for Write {}
-impl DeviceContext for Mmap {}
-impl DeviceContext for Ioctl {}
-impl DeviceContext for Read {}
-impl DeviceContext for GetRegionInfo {}
 
 /// The trait for VFIO PCI variant driver implementations.
 ///
@@ -280,18 +246,20 @@ impl Mapping<'_> {
 /// - Callback contexts are only borrowed for the corresponding callback and thread.
 /// - `core_device` was initialized by `vfio_pci_core_init_dev()`.
 /// - The VFIO device refcount owns the allocation lifetime.
-/// - `reg_data` is dangling without an owner or points to a valid
-///   `<T::RegistrationData as ForLt>::Of<'_>` owned by the enclosing [`Registration`].
-/// - `open_data` is null outside a successful open, otherwise it owns a pinned
-///   `KBox<T::OpenData<'_>>` until last close. Only open/close mutate it; VFIO
-///   prevents I/O callbacks from racing those transitions. The data is dropped
-///   before PCI core close and before registration data is freed.
+/// - `data` follows the VFIO registration and first-open/last-close lifetimes.
+///   Open data is destroyed before PCI core close, and registration data is
+///   released after PCI core unregistration has drained callbacks.
 #[repr(C)]
 pub struct Device<T: Operations, Ctx: DeviceContext = Normal> {
     core_device: Opaque<bindings::vfio_pci_core_device>,
-    reg_data: UnsafeCell<NonNull<<T::RegistrationData as ForLt>::Of<'static>>>,
-    open_data: UnsafeCell<*mut T::OpenData<'static>>,
+    data: CallbackData<T::RegistrationData, OpenDataFamily<T>>,
     _context: PhantomData<(Ctx, NotThreadSafe)>,
+}
+
+struct OpenDataFamily<T>(PhantomData<T>);
+
+impl<T: Operations> ForLt for OpenDataFamily<T> {
+    type Of<'a> = T::OpenData<'a>;
 }
 
 impl<T: Operations> Device<T> {
@@ -307,6 +275,7 @@ impl<T: Operations> Device<T> {
 
     fn allocate(pdev: &pci::Device<device::Core<'_>>, passthrough: bool) -> Result<ARef<Self>> {
         const_assert!(core::mem::offset_of!(Self, core_device) == 0);
+        const_assert!(core::mem::offset_of!(bindings::vfio_pci_core_device, vdev) == 0);
         let size = Kmalloc::aligned_layout(Layout::new::<Self>()).size();
 
         // SAFETY: The bound PCI device and static ops are valid. The allocation
@@ -318,8 +287,7 @@ impl<T: Operations> Device<T> {
 
         // SAFETY: Initialise the Rust field in the newly allocated device.
         unsafe {
-            (&raw mut (*this.as_ptr()).reg_data).write(UnsafeCell::new(NonNull::dangling()));
-            (&raw mut (*this.as_ptr()).open_data).write(UnsafeCell::new(core::ptr::null_mut()));
+            (&raw mut (*this.as_ptr()).data).write(CallbackData::new());
             (&raw mut (*this.as_ptr())._context).write(PhantomData);
         }
 
@@ -330,50 +298,6 @@ impl<T: Operations> Device<T> {
 
         // SAFETY: `this` owns the initial VFIO device reference.
         Ok(unsafe { ARef::from_raw(this) })
-    }
-
-    /// Access the registration data through a closure with an HRTB lifetime.
-    ///
-    /// The closure's `for<'a>` bound prevents the caller from smuggling
-    /// references with a concrete short lifetime out of the closure.
-    ///
-    /// # Safety
-    ///
-    /// Registration data must be published and remain valid through this call.
-    unsafe fn registration_data_with<R>(
-        &self,
-        f: impl for<'a> FnOnce(&'a <T::RegistrationData as ForLt>::Of<'a>) -> R,
-    ) -> R {
-        // SAFETY: Registration keeps the allocation and its borrowed resources
-        // alive until unregistration completes. Covariance permits shortening
-        // the erased binding lifetime to this callback's borrow.
-        let reg_data: &<T::RegistrationData as ForLt>::Of<'_> = unsafe {
-            (*self.reg_data.get())
-                .cast::<<T::RegistrationData as ForLt>::Of<'_>>()
-                .as_ref()
-        };
-        f(reg_data)
-    }
-
-    /// # Safety
-    ///
-    /// The caller must be an I/O callback while VFIO keeps the device open.
-    unsafe fn callback_data_with<R>(
-        &self,
-        f: impl for<'borrow, 'data> FnOnce(
-            &'borrow <T::RegistrationData as ForLt>::Of<'data>,
-            Pin<&'borrow T::OpenData<'data>>,
-        ) -> R,
-    ) -> R {
-        // SAFETY: VFIO excludes open/close and unregister while this callback runs.
-        unsafe {
-            self.registration_data_with(|reg_data| {
-                let ptr = (*self.open_data.get()).cast::<T::OpenData<'_>>();
-                // The data lifetime stays independent of the callback borrow,
-                // so borrowed OpenData fields cannot be stored back into OpenData.
-                f(reg_data, Pin::new_unchecked(&*ptr))
-            })
-        }
     }
 
     /// # Safety
@@ -403,7 +327,15 @@ impl<T: Operations, Ctx: DeviceContext> Device<T, Ctx> {
     }
 
     fn vfio_device(&self) -> *mut bindings::vfio_device {
-        self.core_device.get().cast()
+        self.as_ref().as_raw()
+    }
+}
+
+impl<T: Operations, Ctx: DeviceContext> AsRef<super::Device<Ctx>> for Device<T, Ctx> {
+    fn as_ref(&self) -> &super::Device<Ctx> {
+        // SAFETY: The PCI core device embeds an initialized vfio_device. The borrow
+        // covers the same object and preserves the callback context and its lifetime.
+        unsafe { super::Device::from_raw(&raw mut (*self.core_device()).vdev) }
     }
 }
 
@@ -507,13 +439,14 @@ impl<T: Operations> Device<T, GetRegionInfo> {
 // SAFETY: The embedded device reference count owns the VFIO allocation.
 unsafe impl<T: Operations> AlwaysRefCounted for Device<T> {
     fn inc_ref(&self) {
-        // SAFETY: `self` holds a live VFIO device reference.
-        unsafe { bindings::get_device(&raw mut (*self.vfio_device()).device) };
+        self.as_ref().inc_ref();
     }
 
     unsafe fn dec_ref(obj: NonNull<Self>) {
-        // SAFETY: The caller owns the reference being released.
-        unsafe { bindings::put_device(&raw mut (*obj.as_ref().vfio_device()).device) };
+        // SAFETY: The caller owns a reference to this live PCI wrapper.
+        let dev = unsafe { obj.as_ref() }.as_ref();
+        // SAFETY: The embedded VFIO device owns the same allocation and reference.
+        unsafe { super::Device::dec_ref(NonNull::from(dev)) };
     }
 }
 
@@ -529,9 +462,7 @@ unsafe impl<T: Operations> Sync for Device<T> {}
 ///
 /// `vdev` must belong to a registered `Device<T>` in VFIO's first-open context.
 /// VFIO must exclude other opens, closes and I/O callbacks for this call.
-unsafe extern "C" fn open_device_cb<T: Operations>(
-    vdev: *mut bindings::vfio_device,
-) -> core::ffi::c_int {
+unsafe extern "C" fn open_device_cb<T: Operations>(vdev: *mut bindings::vfio_device) -> c_int {
     // SAFETY: `vdev` is valid; set by vfio_alloc_device.
     let dev = unsafe { Device::<T>::from_vfio_device(vdev) };
 
@@ -543,18 +474,9 @@ unsafe extern "C" fn open_device_cb<T: Operations>(
 
     // SAFETY: Registration data is initialized before the VFIO device is published.
     let result = unsafe {
-        dev.registration_data_with(|rd| {
-            // Allocate before calling the driver so allocation failure cannot follow open.
-            let data = KBox::<T::OpenData<'_>>::new_uninit(GFP_KERNEL)?;
-            let data = data.write_pin_init(T::open_device(dev.with_context::<Open>(), rd))?;
-
-            // SAFETY: Only the owning pointer is moved; the allocation remains pinned.
-            let raw =
-                KBox::into_raw(Pin::into_inner_unchecked(data)).cast::<T::OpenData<'static>>();
-            // SAFETY: First open is exclusive with I/O callbacks and last close.
-            // Lifetimes do not affect layout; the device owns the allocation until close.
-            *dev.open_data.get() = raw;
-            Ok::<(), Error>(())
+        dev.data.registration_data_with(|rd| {
+            dev.data
+                .open(|| T::open_device(dev.with_context::<Open>(), rd))
         })
     };
     match result {
@@ -579,12 +501,9 @@ unsafe extern "C" fn open_device_cb<T: Operations>(
 unsafe extern "C" fn close_device_cb<T: Operations>(vdev: *mut bindings::vfio_device) {
     // SAFETY: `vdev` is valid.
     let dev = unsafe { Device::<T>::from_vfio_device(vdev) };
-    // SAFETY: Last close is exclusive with I/O callbacks and the next first open.
-    let raw = unsafe { core::mem::replace(&mut *dev.open_data.get(), core::ptr::null_mut()) };
-    // Run the driver's destructor while registration data and PCI resources are valid.
-    // SAFETY: Successful open transferred this allocation with `KBox::into_raw`.
-    // Last close takes ownership exactly once and drops it without moving the pointee.
-    unsafe { drop(KBox::from_raw(raw)) };
+    // SAFETY: Last close drains I/O callbacks and excludes the next first open.
+    // Registration data and PCI resources remain valid while open data is destroyed.
+    unsafe { dev.data.close() };
     // SAFETY: Matches the enable in open_device_cb.
     unsafe { bindings::vfio_pci_core_close_device(vdev) };
 }
@@ -602,7 +521,8 @@ unsafe extern "C" fn ioctl_cb<T: Operations>(
     let dev = unsafe { Device::<T>::from_vfio_device(vdev) };
     // SAFETY: VFIO invokes this callback for an open device with valid arguments.
     match unsafe {
-        dev.callback_data_with(|rd, od| T::ioctl(dev.with_context::<Ioctl>(), rd, od, cmd, arg))
+        dev.data
+            .callback_data_with(|rd, od| T::ioctl(dev.with_context::<Ioctl>(), rd, od, cmd, arg))
     } {
         Ok(v) => v,
         Err(e) => e.to_errno() as isize,
@@ -633,7 +553,7 @@ unsafe extern "C" fn read_cb<T: Operations>(
     };
     // SAFETY: VFIO invokes this callback for an open device with valid arguments.
     match unsafe {
-        dev.callback_data_with(|rd, od| {
+        dev.data.callback_data_with(|rd, od| {
             T::read(dev.with_context::<Read>(), rd, od, &mut ubuf, &mut pos)
         })
     } {
@@ -652,7 +572,7 @@ unsafe extern "C" fn get_region_info_cb<T: Operations>(
     vdev: *mut bindings::vfio_device,
     info: *mut bindings::vfio_region_info,
     caps: *mut bindings::vfio_info_cap,
-) -> core::ffi::c_int {
+) -> c_int {
     // SAFETY: `vdev`, `info`, and `caps` are valid kernel pointers provided
     // by the VFIO core.
     let dev = unsafe { Device::<T>::from_vfio_device(vdev) };
@@ -664,7 +584,7 @@ unsafe extern "C" fn get_region_info_cb<T: Operations>(
     };
     // SAFETY: VFIO invokes this callback for an open device with valid arguments.
     match unsafe {
-        dev.callback_data_with(|rd, od| {
+        dev.data.callback_data_with(|rd, od| {
             T::get_region_info(dev.with_context::<GetRegionInfo>(), rd, od, info, &mut caps)
         })
     } {
@@ -696,7 +616,7 @@ unsafe extern "C" fn write_cb<T: Operations>(
     };
     // SAFETY: This callback runs while VFIO keeps both callback data allocations alive.
     match unsafe {
-        dev.callback_data_with(|rd, od| {
+        dev.data.callback_data_with(|rd, od| {
             T::write(dev.with_context::<Write>(), rd, od, &mut ubuf, &mut pos)
         })
     } {
@@ -713,7 +633,7 @@ unsafe extern "C" fn write_cb<T: Operations>(
 unsafe extern "C" fn mmap_cb<T: Operations>(
     vdev: *mut bindings::vfio_device,
     vma: *mut bindings::vm_area_struct,
-) -> core::ffi::c_int {
+) -> c_int {
     // SAFETY: VFIO supplies an open device for this mmap callback.
     let dev = unsafe { Device::<T>::from_vfio_device(vdev) };
     let mut mapping = Mapping {
@@ -723,7 +643,8 @@ unsafe extern "C" fn mmap_cb<T: Operations>(
     };
     // SAFETY: This callback runs while VFIO keeps both callback data allocations alive.
     match unsafe {
-        dev.callback_data_with(|rd, od| T::mmap(dev.with_context::<Mmap>(), rd, od, &mut mapping))
+        dev.data
+            .callback_data_with(|rd, od| T::mmap(dev.with_context::<Mmap>(), rd, od, &mut mapping))
     } {
         Ok(()) => 0,
         Err(e) => e.to_errno(),
@@ -830,7 +751,7 @@ impl<'a, T: Operations> Registration<'a, T> {
             NonNull::from(Pin::get_ref(reg_data.as_ref())).cast();
 
         // SAFETY: No concurrent registration or callbacks; publish before registering.
-        unsafe { *dev.reg_data.get() = ptr };
+        unsafe { *dev.data.reg_data.get() = ptr };
 
         Ok(Self {
             dev: dev.into(),
@@ -882,13 +803,13 @@ impl<'a, T: Operations> Registration<'a, T> {
     /// Prepare the variant driver's state for a PCI reset.
     pub fn reset_prepare(&self) {
         // SAFETY: This owner keeps the pinned registration data alive.
-        unsafe { self.dev.registration_data_with(T::reset_prepare) };
+        unsafe { self.dev.data.registration_data_with(T::reset_prepare) };
     }
 
     /// Complete the variant driver's state update after a PCI reset.
     pub fn reset_done(&self) -> Result {
         // SAFETY: This owner keeps the pinned registration data alive.
-        unsafe { self.dev.registration_data_with(T::reset_done) }
+        unsafe { self.dev.data.registration_data_with(T::reset_done) }
     }
 
     /// Signal the VFIO error interrupt and return the PCI recovery result.
@@ -923,6 +844,6 @@ impl<'a, T: Operations> Registration<'a, T> {
 impl<T: Operations> Drop for Registration<'_, T> {
     fn drop(&mut self) {
         // SAFETY: The driver unregistered in `unbind`, or registration did not succeed.
-        unsafe { *self.dev.reg_data.get() = NonNull::dangling() };
+        unsafe { *self.dev.data.reg_data.get() = NonNull::dangling() };
     }
 }

@@ -18,11 +18,8 @@ use crate::{
     alloc::allocator::Kmalloc,
     bindings,
     device,
-    device_id::RawDeviceIdIndex,
-    driver,
     error::{
         from_err_ptr,
-        from_result,
         to_result, //
     },
     mm::virt::VmaRef,
@@ -38,8 +35,7 @@ use crate::{
         NotThreadSafe,
         Opaque, //
     },
-    uaccess::UserPtr,
-    ThisModule, //
+    uaccess::UserPtr, //
 };
 use core::{
     alloc::Layout,
@@ -97,120 +93,6 @@ impl DeviceContext for Mmap {}
 impl DeviceContext for Ioctl {}
 impl DeviceContext for Read {}
 impl DeviceContext for GetRegionInfo {}
-
-/// Connect a PCI driver's private data to its VFIO registration.
-///
-/// # Safety
-///
-/// `registration` must always select this PCI device's sole registration and must not sleep.
-/// The driver must use [`Adapter`], and its `probe` and `unbind` callbacks must not enable SR-IOV.
-pub unsafe trait Driver: for<'a> pci::Driver<Data<'a>: Sync> + Sized {
-    /// The VFIO operations implemented by this driver.
-    type Operations: Operations;
-
-    /// Select the registration without blocking or changing its identity.
-    fn registration<'a, 'bound>(
-        data: Pin<&'a Self::Data<'bound>>,
-    ) -> &'a Registration<'bound, Self::Operations>;
-}
-
-/// Register a VFIO PCI variant driver and coordinate its callback lifetimes.
-///
-/// The adapter publishes complete private data before registering VFIO, and unregisters VFIO
-/// before calling the driver's optional `unbind` callback or removing private data. SR-IOV
-/// enable and disable callbacks are not supported by this adapter.
-pub struct Adapter<D: Driver>(D);
-
-// SAFETY: The C PCI driver embeds `device_driver` at the stated offset; its private data is
-// the pinned `D::Data` installed by this adapter's probe callback.
-unsafe impl<D: Driver> driver::DriverLayout for Adapter<D> {
-    type DriverType = bindings::pci_driver;
-    type DriverData<'bound> = D::Data<'bound>;
-    const DEVICE_DRIVER_OFFSET: usize = core::mem::offset_of!(Self::DriverType, driver);
-}
-
-// SAFETY: The driver core unregisters only a successfully registered, still-live PCI driver.
-unsafe impl<D: Driver> driver::RegistrationOps for Adapter<D> {
-    unsafe fn register(
-        pdrv: &Opaque<Self::DriverType>,
-        name: &'static CStr,
-        module: &'static ThisModule,
-    ) -> Result {
-        build_assert!(
-            D::DRIVER_MANAGED_DMA,
-            "VFIO drivers must manage DMA ownership"
-        );
-        #[cfg(CONFIG_PCI_IOV)]
-        build_assert!(
-            !D::HAS_SRIOV_ENABLE && !D::HAS_SRIOV_DISABLE,
-            "VFIO PCI variant drivers do not support SR-IOV configuration"
-        );
-
-        // SAFETY: The driver is being initialized and is not yet visible to the PCI core.
-        unsafe {
-            (*pdrv.get()).name = name.as_char_ptr();
-            (*pdrv.get()).probe = Some(Self::probe_callback);
-            (*pdrv.get()).remove = Some(Self::remove_callback);
-            (*pdrv.get()).id_table = D::ID_TABLE.as_ptr();
-            (*pdrv.get()).driver_managed_dma = D::DRIVER_MANAGED_DMA;
-            (*pdrv.get()).err_handler = &PciCallbacks::<D>::ERROR_HANDLERS;
-            (*pdrv.get()).driver.pm = &PciCallbacks::<D>::PM_OPS;
-        }
-
-        // SAFETY: The caller keeps this initialized driver pinned until unregistration.
-        to_result(unsafe {
-            bindings::__pci_register_driver(pdrv.get(), module.as_ptr(), name.as_char_ptr())
-        })
-    }
-
-    unsafe fn unregister(pdrv: &Opaque<Self::DriverType>) {
-        // SAFETY: The registration contract guarantees a live, registered PCI driver.
-        unsafe { bindings::pci_unregister_driver(pdrv.get()) };
-    }
-}
-
-impl<D: Driver> Adapter<D> {
-    extern "C" fn probe_callback(
-        pdev: *mut bindings::pci_dev,
-        id: *const bindings::pci_device_id,
-    ) -> c_int {
-        // SAFETY: PCI supplies a live device and holds its lock throughout probe.
-        let pdev = unsafe { &*pdev.cast::<pci::Device<device::CoreInternal<'_>>>() };
-        // SAFETY: `DeviceId` is a transparent wrapper with no additional invariants.
-        let id = unsafe { &*id.cast::<pci::DeviceId>() };
-        // SAFETY: The ID comes from `D::ID_TABLE`, a dynamic ID with matching driver_data,
-        // or the wildcard ID whose driver_data is zero.
-        let info = unsafe { id.info_unchecked_opt::<D::IdInfo>() };
-
-        from_result(|| {
-            pdev.as_ref().set_drvdata(D::probe(pdev, info))?;
-            // SAFETY: The fully initialized, pinned `D::Data` was just installed above.
-            let data = unsafe { pdev.as_ref().drvdata_borrow::<D::Data<'_>>() };
-            // SAFETY: `D` selects this device's sole registration. Private data is installed
-            // before VFIO can enable runtime PM.
-            if let Err(error) = unsafe { D::registration(data).register() } {
-                // SAFETY: Failed VFIO registration has unwound its callbacks. In particular,
-                // rejecting a PF with enabled VFs must not disable those VFs during rollback.
-                drop(unsafe { pdev.as_ref().drvdata_obtain::<D::Data<'_>>() });
-                return Err(error);
-            }
-            Ok(0)
-        })
-    }
-
-    extern "C" fn remove_callback(pdev: *mut bindings::pci_dev) {
-        // SAFETY: PCI supplies a live device under its lock, after quiescing runtime PM.
-        let pdev = unsafe { &*pdev.cast::<pci::Device<device::CoreInternal<'_>>>() };
-        // SAFETY: A successful probe installed this device's complete private data.
-        let data = unsafe { pdev.as_ref().drvdata_borrow::<D::Data<'_>>() };
-        // SAFETY: Probe registered this object. Private data and all its fields remain live
-        // while VFIO unregister drains VFIO, VGA and PM callbacks.
-        unsafe { D::registration(data).unregister() };
-        D::unbind(pdev, data);
-        // SAFETY: Callbacks have drained, so private data can now be removed and destroyed.
-        drop(unsafe { pdev.as_ref().drvdata_obtain::<D::Data<'_>>() });
-    }
-}
 
 /// The trait for VFIO PCI variant driver implementations.
 ///
@@ -848,109 +730,6 @@ unsafe extern "C" fn mmap_cb<T: Operations>(
     }
 }
 
-/// Callbacks that recover the VFIO device through its PCI driver's private data.
-struct PciCallbacks<D>(PhantomData<D>);
-
-impl<D: Driver> PciCallbacks<D> {
-    /// # Safety
-    ///
-    /// `dev` must belong to `D`. Its private data must remain installed and valid for `'a`,
-    /// or not yet be installed. The caller must exclude its removal; runtime PM callbacks
-    /// use their own synchronization rather than the PCI device lock.
-    unsafe fn registration<'a>(
-        dev: *mut bindings::device,
-    ) -> Option<&'a Registration<'a, D::Operations>> {
-        // SAFETY: The callback supplies a live device bound to `D`.
-        let data = unsafe { bindings::dev_get_drvdata(dev) };
-        if data.is_null() {
-            return None;
-        }
-        // SAFETY: PCI published a fully initialized, pinned `D::Data`. The caller prevents
-        // its removal, and `D::Data: Sync` permits shared runtime PM callback borrows.
-        let data = unsafe { Pin::new_unchecked(&*data.cast::<D::Data<'_>>()) };
-        Some(D::registration(data))
-    }
-
-    unsafe extern "C" fn reset_prepare(pdev: *mut bindings::pci_dev) {
-        // SAFETY: PCI holds the device lock across reset and registration teardown.
-        let Some(reg) = (unsafe { Self::registration(&raw mut (*pdev).dev) }) else {
-            return;
-        };
-        // SAFETY: The registration owns callback data throughout bind and unbind.
-        unsafe { reg.dev.registration_data_with(D::Operations::reset_prepare) };
-    }
-
-    unsafe extern "C" fn reset_done(pdev: *mut bindings::pci_dev) {
-        // SAFETY: PCI holds the device lock across reset and registration teardown.
-        let Some(reg) = (unsafe { Self::registration(&raw mut (*pdev).dev) }) else {
-            return;
-        };
-        // SAFETY: The registration owns callback data throughout bind and unbind.
-        let result = unsafe { reg.dev.registration_data_with(D::Operations::reset_done) };
-        if let Err(error) = result {
-            // SAFETY: The PCI callback keeps its embedded device alive.
-            let dev = unsafe { device::Device::<device::Normal>::from_raw(&raw mut (*pdev).dev) };
-            dev_err!(dev, "VFIO device reset failed: {:?}\n", error);
-            // SAFETY: The initialized VFIO device remains alive for this callback.
-            unsafe {
-                bindings::vfio_pci_core_aer_err_detected(reg.dev.core_device());
-            }
-        }
-    }
-
-    unsafe extern "C" fn error_detected(
-        pdev: *mut bindings::pci_dev,
-        _state: bindings::pci_channel_state_t,
-    ) -> bindings::pci_ers_result_t {
-        // SAFETY: PCI serializes error callbacks with binding and unbinding.
-        let Some(reg) = (unsafe { Self::registration(&raw mut (*pdev).dev) }) else {
-            return bindings::pci_ers_result_PCI_ERS_RESULT_CAN_RECOVER;
-        };
-        // SAFETY: The registered device owns its error notification state.
-        unsafe { bindings::vfio_pci_core_aer_err_detected(reg.dev.core_device()) }
-    }
-
-    #[cfg(CONFIG_PM)]
-    unsafe extern "C" fn runtime_suspend(dev: *mut bindings::device) -> c_int {
-        // SAFETY: Registration enables PM only after private data is installed. PCI remove
-        // and VFIO unregister quiesce runtime PM before private data can be removed.
-        let Some(reg) = (unsafe { Self::registration(dev) }) else {
-            return EBUSY.to_errno();
-        };
-        // SAFETY: This is the runtime-suspend callback for the initialized core device.
-        unsafe { bindings::vfio_pci_core_runtime_suspend(reg.dev.core_device()) }
-    }
-
-    #[cfg(CONFIG_PM)]
-    unsafe extern "C" fn runtime_resume(dev: *mut bindings::device) -> c_int {
-        // SAFETY: Private data remains installed until VFIO unregister has resumed the
-        // device and quiesced PM, including registration failure.
-        let Some(reg) = (unsafe { Self::registration(dev) }) else {
-            return ENODEV.to_errno();
-        };
-        // SAFETY: This is the runtime-resume callback for the initialized core device.
-        unsafe { bindings::vfio_pci_core_runtime_resume(reg.dev.core_device()) }
-    }
-
-    const ERROR_HANDLERS: bindings::pci_error_handlers = bindings::pci_error_handlers {
-        error_detected: Some(Self::error_detected),
-        mmio_enabled: None,
-        slot_reset: None,
-        reset_prepare: Some(Self::reset_prepare),
-        reset_done: Some(Self::reset_done),
-        resume: None,
-        cor_error_detected: None,
-    };
-
-    const PM_OPS: bindings::dev_pm_ops = bindings::dev_pm_ops {
-        #[cfg(CONFIG_PM)]
-        runtime_suspend: Some(Self::runtime_suspend),
-        #[cfg(CONFIG_PM)]
-        runtime_resume: Some(Self::runtime_resume),
-        ..pin_init::zeroed()
-    };
-}
-
 /// Build the `vfio_device_ops` vtable for a variant driver `T`.
 ///
 /// Open and I/O callbacks dispatch to `T`'s trait implementation.
@@ -1007,9 +786,8 @@ macro_rules! build_ops {
 /// Owns both the VFIO device reference and the registration data, tying
 /// resource lifetimes to the PCI binding scope `'a`.
 ///
-/// Prepare this owner during probe. [`Adapter`] registers it after private data is installed
-/// and unregisters it before private data is removed. Dropping the owner releases the VFIO
-/// allocation and registration data after callbacks have drained.
+/// Prepare this owner during probe, register it in [`pci::Driver::bind`], and unregister it
+/// in [`pci::Driver::unbind`] before releasing any driver data.
 pub struct Registration<'a, T: Operations> {
     dev: ARef<Device<T>>,
     _reg_data: Pin<KBox<<T::RegistrationData as ForLt>::Of<'a>>>,
@@ -1034,8 +812,8 @@ impl<'a, T: Operations> Registration<'a, T> {
     /// The device must have been allocated during this parent binding and never registered.
     /// No other `Registration` may own or publish callback data for this device until this
     /// owner is dropped.
-    /// The caller must hold the PCI device lock. The owner must be stored in the private data
-    /// of a driver registered through [`Adapter`] and selected by [`Driver::registration`].
+    /// The caller must hold the PCI device lock. Store the owner in the driver's private data
+    /// and keep it alive until unregistration has completed.
     pub unsafe fn new(
         pdev: &'a pci::Device<device::Core<'_>>,
         dev: &Device<T>,
@@ -1064,10 +842,25 @@ impl<'a, T: Operations> Registration<'a, T> {
     ///
     /// # Safety
     ///
-    /// Call once under the PCI device lock, after installing complete driver data whose
-    /// [`Driver::registration`] selector returns `self`. On success, unregister before
-    /// private data is removed or destroyed.
-    unsafe fn register(&self) -> Result {
+    /// Call once from the bound PCI driver `D`'s `bind` callback, with `self` in its installed
+    /// driver data. Its PCI reset, error and runtime-PM callbacks must delegate to this owner.
+    /// After success, unregister before any later bind error or driver-data teardown.
+    pub unsafe fn register<D: pci::Driver>(&self) -> Result {
+        build_assert!(
+            D::DRIVER_MANAGED_DMA,
+            "VFIO drivers must manage DMA ownership"
+        );
+        #[cfg(CONFIG_PM)]
+        build_assert!(
+            D::PM_OPS.is_some(),
+            "VFIO drivers must install runtime PM callbacks"
+        );
+        #[cfg(CONFIG_PCI_IOV)]
+        build_assert!(
+            !D::HAS_SRIOV_ENABLE && !D::HAS_SRIOV_DISABLE,
+            "VFIO PCI variant drivers do not support SR-IOV configuration"
+        );
+
         // SAFETY: The caller has published complete private data under the PCI device lock;
         // it remains accessible during runtime PM setup.
         to_result(unsafe { bindings::vfio_pci_core_register_device(self.dev.core_device()) })
@@ -1077,9 +870,10 @@ impl<'a, T: Operations> Registration<'a, T> {
     ///
     /// # Safety
     ///
-    /// Call once after successful registration, with the PCI device lock held and private
-    /// data still installed. No private-data fields may have been destroyed.
-    unsafe fn unregister(&self) {
+    /// Call once after successful registration, with the PCI device lock held and all driver
+    /// data still installed. Do not call after registration failed: that can disable VFs
+    /// belonging to a PF which VFIO refused to bind.
+    pub unsafe fn unregister(&self) {
         // SAFETY: The caller keeps private data installed while unregistration drains VFIO,
         // VGA and runtime PM callbacks. No field of the enclosing data is being destroyed.
         unsafe { bindings::vfio_pci_core_unregister_device(self.dev.core_device()) };
@@ -1102,12 +896,33 @@ impl<'a, T: Operations> Registration<'a, T> {
         // SAFETY: This owner keeps the initialized VFIO core device alive.
         unsafe { bindings::vfio_pci_core_aer_err_detected(self.dev.core_device()) }
     }
+
+    /// Prepare the VFIO core device for runtime suspend.
+    ///
+    /// # Safety
+    ///
+    /// Only call from the parent PCI driver's runtime-suspend callback.
+    #[cfg(CONFIG_PM)]
+    pub unsafe fn runtime_suspend(&self) -> Result {
+        // SAFETY: The caller supplies the runtime-suspend callback context.
+        to_result(unsafe { bindings::vfio_pci_core_runtime_suspend(self.dev.core_device()) })
+    }
+
+    /// Complete the VFIO core device's runtime resume.
+    ///
+    /// # Safety
+    ///
+    /// Only call from the parent PCI driver's runtime-resume callback.
+    #[cfg(CONFIG_PM)]
+    pub unsafe fn runtime_resume(&self) -> Result {
+        // SAFETY: The caller supplies the runtime-resume callback context.
+        to_result(unsafe { bindings::vfio_pci_core_runtime_resume(self.dev.core_device()) })
+    }
 }
 
 impl<T: Operations> Drop for Registration<'_, T> {
     fn drop(&mut self) {
-        // SAFETY: The adapter unregisters before removing private data. Failed or unattempted
-        // registration also leaves no callbacks behind.
+        // SAFETY: The driver unregistered in `unbind`, or registration did not succeed.
         unsafe { *self.dev.reg_data.get() = NonNull::dangling() };
     }
 }

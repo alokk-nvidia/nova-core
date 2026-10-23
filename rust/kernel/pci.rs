@@ -154,6 +154,13 @@ impl<T: Driver> Adapter<T> {
             let data = T::probe(pdev, info);
 
             pdev.as_ref().set_drvdata(data)?;
+            // SAFETY: `set_drvdata` installed the pinned `T::Data` above.
+            let data = unsafe { pdev.as_ref().drvdata_borrow::<T::Data<'_>>() };
+            if let Err(error) = T::bind(pdev, data) {
+                // SAFETY: Failed bind leaves no callbacks borrowing the installed data.
+                drop(unsafe { pdev.as_ref().drvdata_obtain::<T::Data<'_>>() });
+                return Err(error);
+            }
             Ok(0)
         })
     }
@@ -415,6 +422,15 @@ pub trait Driver {
         dev: &'bound Device<device::Core<'_>>,
         id_info: Option<&'bound Self::IdInfo>,
     ) -> impl PinInit<Self::Data<'bound>, Error> + 'bound;
+
+    /// Complete probe after the pinned driver data has been installed.
+    ///
+    /// Called with the PCI device lock held. On error, the data is dropped without calling
+    /// [`Self::unbind`]. Any callbacks started here must be stopped before returning an error.
+    fn bind<'bound>(dev: &Device<device::Core<'_>>, this: Pin<&Self::Data<'bound>>) -> Result {
+        let _ = (dev, this);
+        Ok(())
+    }
 
     /// PCI driver unbind.
     ///

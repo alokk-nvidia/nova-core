@@ -1096,6 +1096,12 @@ impl<'a, T: Operations> Registration<'a, T> {
         // SAFETY: This owner keeps the pinned registration data alive.
         unsafe { self.dev.registration_data_with(T::reset_done) }
     }
+
+    /// Signal the VFIO error interrupt and return the PCI recovery result.
+    pub fn error_detected(&self) -> bindings::pci_ers_result_t {
+        // SAFETY: This owner keeps the initialized VFIO core device alive.
+        unsafe { bindings::vfio_pci_core_aer_err_detected(self.dev.core_device()) }
+    }
 }
 
 impl<T: Operations> Drop for Registration<'_, T> {

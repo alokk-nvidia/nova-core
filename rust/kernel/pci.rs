@@ -109,7 +109,7 @@ unsafe impl<T: Driver> driver::RegistrationOps for Adapter<T> {
             (*pdrv.get()).remove = Some(Self::remove_callback);
             (*pdrv.get()).id_table = T::ID_TABLE.as_ptr();
             (*pdrv.get()).driver_managed_dma = T::DRIVER_MANAGED_DMA;
-            if T::HAS_RESET_PREPARE || T::HAS_RESET_DONE {
+            if T::HAS_ERROR_DETECTED || T::HAS_RESET_PREPARE || T::HAS_RESET_DONE {
                 (*pdrv.get()).err_handler = &Self::ERROR_HANDLERS;
             }
             #[cfg(CONFIG_PCI_IOV)]
@@ -223,8 +223,27 @@ impl<T: Driver> Adapter<T> {
         };
     }
 
+    extern "C" fn error_detected_callback(
+        pdev: *mut bindings::pci_dev,
+        state: bindings::pci_channel_state_t,
+    ) -> bindings::pci_ers_result_t {
+        // SAFETY: PCI error recovery holds the device lock.
+        let dev = unsafe { &*pdev.cast::<Device<device::CoreInternal<'_>>>() };
+        // SAFETY: The device lock prevents removal of installed driver data.
+        unsafe {
+            Self::callback_data_with(&raw mut (*pdev).dev, |data| {
+                T::error_detected(dev, data, state)
+            })
+        }
+        .unwrap_or(bindings::pci_ers_result_PCI_ERS_RESULT_CAN_RECOVER)
+    }
+
     const ERROR_HANDLERS: bindings::pci_error_handlers = bindings::pci_error_handlers {
-        error_detected: None,
+        error_detected: if T::HAS_ERROR_DETECTED {
+            Some(Self::error_detected_callback)
+        } else {
+            None
+        },
         mmio_enabled: None,
         slot_reset: None,
         reset_prepare: if T::HAS_RESET_PREPARE {
@@ -455,6 +474,16 @@ pub trait Driver {
     /// Called after a PCI function reset, with the device lock held.
     fn reset_done<'bound>(dev: &Device<device::Core<'_>>, this: Pin<&Self::Data<'bound>>) {
         let _ = (dev, this);
+        build_error!(crate::error::VTABLE_DEFAULT_ERROR)
+    }
+
+    /// Handle a PCI error and return the PCI recovery result, with the device lock held.
+    fn error_detected<'bound>(
+        dev: &Device<device::Core<'_>>,
+        this: Pin<&Self::Data<'bound>>,
+        state: bindings::pci_channel_state_t,
+    ) -> bindings::pci_ers_result_t {
+        let _ = (dev, this, state);
         build_error!(crate::error::VTABLE_DEFAULT_ERROR)
     }
 

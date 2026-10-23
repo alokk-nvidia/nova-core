@@ -32,6 +32,9 @@ use crate::{
     gpu::Gpu, //
 };
 
+#[cfg(CONFIG_PCI_IOV)]
+use crate::vgpu::vgpu_api::NovaCoreVfApi;
+
 /// Counter for generating unique auxiliary device IDs.
 static AUXILIARY_ID_COUNTER: Atomic<u32> = Atomic::new(0);
 
@@ -41,6 +44,10 @@ pub(crate) struct NovaCore<'bound> {
     _reg: auxiliary::Registration<'bound, ForLt!(NovaCoreApi<'_>)>,
     /// Unregisters fwctl and drains its callbacks before GPU resources are dropped.
     _fwctl: fwctl::Registration<'bound, NovaCoreFwCtl>,
+    #[cfg(CONFIG_PCI_IOV)]
+    #[allow(clippy::type_complexity)]
+    #[pin]
+    _vf_registration: pci::VfRegistration<'bound, ForLt!(NovaCoreVfApi<'_>)>,
     #[pin]
     pub(crate) gpu: Gpu<'bound>,
     bar: pci::Bar<'bound, BAR0_SIZE>,
@@ -112,6 +119,11 @@ impl pci::Driver for NovaCoreDriver {
 
         try_pin_init!(NovaCore {
             _: {
+                #[cfg(CONFIG_PCI_IOV)]
+                if pdev.is_virtfn() {
+                    return Err(ENODEV);
+                }
+
                 pdev.enable_device_mem()?;
                 pdev.set_master();
             },
@@ -149,6 +161,18 @@ impl pci::Driver for NovaCoreDriver {
                 _gpu.run_selftests(pdev);
                 Ok(())
             }),
+
+            #[cfg(CONFIG_PCI_IOV)]
+            _vf_registration <- {
+                // SAFETY: `gpu` is initialized at its final pinned address and is dropped
+                // after this registration. The private registration is embedded in the PF's
+                // driver data, so VF removal completes while its borrowed GPU services live.
+                let gpu = unsafe { &*core::ptr::from_ref(gpu.as_ref().get_ref()) };
+                let api = NovaCoreVfApi::new(gpu, pdev);
+                // SAFETY: The registration is embedded in this device's pinned driver data.
+                // Probe has exclusive access to the slot, and no VFs have been enabled yet.
+                unsafe { pci::VfRegistration::new(pdev, Ok(api)) }
+            },
 
             _reg: {
                 // TODO: Use `&gpu` self-referential pin-init syntax once available.
@@ -197,5 +221,25 @@ impl pci::Driver for NovaCoreDriver {
                 }
             },
         })
+    }
+
+    #[cfg(CONFIG_PCI_IOV)]
+    fn sriov_enable<'a>(
+        _dev: &'a pci::Device<Core<'_>>,
+        _this: Pin<&Self::Data<'a>>,
+        token: pci::SriovEnable<'a>,
+    ) -> Result<pci::SriovEnabled<'a>> {
+        let num_vfs = token.num_vfs();
+        token.enable(num_vfs)
+    }
+
+    #[cfg(CONFIG_PCI_IOV)]
+    fn sriov_disable<'a>(
+        _dev: &'a pci::Device<Core<'_>>,
+        _this: Pin<&Self::Data<'a>>,
+        token: pci::SriovDisable<'a>,
+    ) -> Result {
+        token.disable();
+        Ok(())
     }
 }

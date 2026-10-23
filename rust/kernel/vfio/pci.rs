@@ -1084,6 +1084,18 @@ impl<'a, T: Operations> Registration<'a, T> {
         // VGA and runtime PM callbacks. No field of the enclosing data is being destroyed.
         unsafe { bindings::vfio_pci_core_unregister_device(self.dev.core_device()) };
     }
+
+    /// Prepare the variant driver's state for a PCI reset.
+    pub fn reset_prepare(&self) {
+        // SAFETY: This owner keeps the pinned registration data alive.
+        unsafe { self.dev.registration_data_with(T::reset_prepare) };
+    }
+
+    /// Complete the variant driver's state update after a PCI reset.
+    pub fn reset_done(&self) -> Result {
+        // SAFETY: This owner keeps the pinned registration data alive.
+        unsafe { self.dev.registration_data_with(T::reset_done) }
+    }
 }
 
 impl<T: Operations> Drop for Registration<'_, T> {

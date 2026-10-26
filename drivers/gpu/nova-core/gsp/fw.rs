@@ -915,11 +915,11 @@ const MCTP_MAGIC: u32 = 0x4D43_5450;
 ///
 /// ```text
 ///     +------------------------------------+
-///     | Queue element header               |  This type: MCTP magic, element length, MCTP
-///     |                                    |  header, NVDM header, message length.
+///     | Queue element header               |  QueueElementHeader: MCTP magic, element length,
+///     |                                    |  MCTP header, NVDM header, message length.
 ///     +------------------------------------+
-///     | Message header                     |  The RPC header or the GMC API header. The NVDM
-///     |                                    |  type selects between the two.
+///     | Message header                     |  RPC header or GMC API header. The NVDM type
+///     |                                    |  selects between the two.
 ///     +------------------------------------+
 ///     | Payload                            |  Message-specific data.
 ///     +------------------------------------+
@@ -927,10 +927,9 @@ const MCTP_MAGIC: u32 = 0x4D43_5450;
 ///
 /// This is the `noEncryption` layout of the `GSP_MSG_QUEUE_ELEMENT` binding. That binding keeps
 /// a 16-byte encryption tag, used only with confidential computing, in a union with the two
-/// trailing fields of this header, so wrapping it would make every element 16 bytes larger than
-/// what the GSP expects. The fields are thus declared again here, with their offsets checked
-/// against the binding. OpenRM has the same split and calls the size of this layout
-/// `GSP_MSG_QUEUE_ELEMENT_SIZE_NO_ENCRYPTION`.
+/// trailing fields of the queue element header, so wrapping the binding would make every element
+/// 16 bytes larger than what the GSP expects. The fields are therefore declared again here, with
+/// their offsets checked against the binding.
 #[repr(C)]
 pub(crate) struct QueueElementHeader {
     /// Always [`MCTP_MAGIC`].
@@ -940,7 +939,7 @@ pub(crate) struct QueueElementHeader {
     /// Under confidential computing the GSP pads elements out to whole queue slots, so this can
     /// be larger than `nvdm_payload_size` plus the size of this header, but never smaller.
     mctp_payload_size: u32,
-    /// MCTP header of the message.
+    /// MCTP transport header of the element.
     mctp_header: MctpHeader,
     /// NVDM header of the message.
     nvdm_header: NvdmHeader,
@@ -1011,12 +1010,12 @@ mod queue_element_header_validation {
 
 #[expect(dead_code)]
 impl QueueElementHeader {
-    /// Creates the header of an element carrying a message of NVDM type `nvdm_type` and
-    /// `message_len` bytes, message header included.
+    /// Creates the queue element header of an element carrying a message of NVDM type `nvdm_type`
+    /// and `message_len` bytes, message header included.
     ///
     /// # Errors
     ///
-    /// - `EOVERFLOW` if the total length does not fit its 32-bit field.
+    /// - `EOVERFLOW` if a length does not fit its 32-bit field.
     pub(crate) fn init(nvdm_type: NvdmType, message_len: usize) -> impl Init<Self, Error> {
         try_init!(QueueElementHeader {
             mctp_magic: MCTP_MAGIC,
@@ -1042,7 +1041,7 @@ impl QueueElementHeader {
         num::u32_as_usize(self.nvdm_payload_size)
     }
 
-    /// Returns the number of slots (i.e. memory pages) used by this message.
+    /// Returns the number of elements (i.e. memory pages) used by this element.
     pub(crate) fn element_count(&self) -> u32 {
         self.mctp_payload_size.div_ceil(cv!(GSP_PAGE_SIZE))
     }

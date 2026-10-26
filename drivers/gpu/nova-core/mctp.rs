@@ -72,7 +72,7 @@ impl MctpHeader {
         self.som().into_bool() && self.eom().into_bool()
     }
 
-    /// Returns whether this header carries the MCTP version this driver uses.
+    /// Returns `true` if this MCTP header carries the version that this driver uses.
     pub(crate) fn has_expected_version(self) -> bool {
         u32::from(self.version()) == Self::VERSION
     }
@@ -102,7 +102,7 @@ impl NvdmHeader {
             .with_nvdm_type(nvdm_type)
     }
 
-    /// Returns whether this is the header of a PCI vendor-defined message from NVIDIA.
+    /// Returns `true` if this NVDM header belongs to a PCI vendor-defined message from NVIDIA.
     ///
     /// The GPU firmware only ever sends such messages, so a mismatch is a sign of corruption.
     pub(crate) fn has_nvidia_vendor(self) -> bool {

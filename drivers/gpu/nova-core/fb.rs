@@ -326,10 +326,7 @@ pub(crate) struct FbSizes {
 
 impl FbSizes {
     /// Computes the framebuffer region sizes for GSP-FMC boot.
-    pub(crate) fn new(
-        ctx: &gsp::GspBootContext<'_, '_>,
-        gsp_fw: &GspFirmware<'_>,
-    ) -> Result<Self> {
+    pub(crate) fn new(ctx: &gsp::GspBootContext<'_, '_>, gsp_fw: &GspFirmware<'_>) -> Result<Self> {
         let hal = hal::fb_hal(ctx.chipset);
         let fb_size = hal.vidmem_size(ctx.bar);
         let (vf_partition_count, wpr2_heap_size) =

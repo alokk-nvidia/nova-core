@@ -19,7 +19,8 @@ use crate::{
             Tlv,
         },
     },
-    gpu::Chipset, //
+    gpu::Chipset,
+    gsp::GspFwHeapParams, //
 };
 
 /// Longest build ID that a log dump header carries, matching Open RM's `BUILD_ID_MAX_LENGTH`.
@@ -74,6 +75,8 @@ pub(crate) struct GspFirmware<'a> {
     pub(crate) signatures: Coherent<'a, [u8]>,
     /// GSP bootloader, verifies the GSP firmware before loading and running it.
     pub(crate) bootloader: RiscvFirmware<'a>,
+    /// Heap sizing parameters reported by the firmware metadata.
+    pub(crate) heap_params: GspFwHeapParams,
 }
 
 impl<'a> GspFirmware<'a> {
@@ -94,6 +97,7 @@ impl<'a> GspFirmware<'a> {
             let fw_vvec = tlv.load_file(dev, chipset)?;
 
             let signatures = Coherent::from_slice(dev, tlv.get_bytes(b"SIGN")?, GFP_KERNEL)?;
+            let heap_params = GspFwHeapParams::from_tlv(chipset, &tlv)?;
 
             Ok(try_pin_init!(Self {
                 radix3 <- Radix3::new(dev, fw_vvec),
@@ -103,6 +107,7 @@ impl<'a> GspFirmware<'a> {
 
                     RiscvFirmware::new(dev, &bl)?
                 },
+                heap_params,
             }))
         })
     }

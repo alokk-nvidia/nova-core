@@ -151,7 +151,7 @@ impl GspHal for Gh100 {
         let chipset = ctx.chipset;
         let gsp_falcon = ctx.gsp_falcon;
 
-        let fb_sizes = FbSizes::new(ctx)?;
+        let fb_sizes = FbSizes::new(ctx, gsp_fw)?;
         dev_dbg!(dev, "{:#x?}\n", fb_sizes);
 
         let wpr_meta =

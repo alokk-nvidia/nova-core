@@ -238,7 +238,8 @@ impl FbRanges {
             FbRange(fw_image_addr..fw_image_addr + fw_image_size)
         };
 
-        let (vf_partition_count, wpr2_heap_size) = wpr2_heap_params(ctx, fb.end)?;
+        let (vf_partition_count, wpr2_heap_size) =
+            wpr2_heap_params(&gsp_fw.heap_params, *ctx.vgpu_state, fb.end)?;
 
         let wpr2_heap = {
             const WPR2_HEAP_DOWN_ALIGN: Alignment = Alignment::SZ_1M;
@@ -260,7 +261,7 @@ impl FbRanges {
         };
 
         let non_wpr_heap = {
-            let non_wpr_heap_size = hal.non_wpr_heap_size();
+            let non_wpr_heap_size = gsp_fw.heap_params.tlv_non_wpr_heap_size;
             FbRange(wpr2.start - non_wpr_heap_size..wpr2.start)
         };
 
@@ -274,7 +275,7 @@ impl FbRanges {
             wpr2,
             non_wpr_heap,
             vf_partition_count,
-            pmu_reserved_size: hal.pmu_reserved_size(),
+            pmu_reserved_size: gsp_fw.heap_params.tlv_pmu_reserved_size,
         })
     }
 }
@@ -294,14 +295,16 @@ pub(crate) fn wpr2_range(bar: Bar0<'_>) -> Option<Range<u64>> {
 }
 
 /// Computes the number of VF partitions and the WPR2 heap size from the vGPU state.
-fn wpr2_heap_params(ctx: &gsp::GspBootContext<'_, '_>, fb_size: u64) -> Result<(u8, u64)> {
-    let heap_params = gsp::GspFwHeapParams::from_chipset(ctx.chipset);
-
-    Ok(match *ctx.vgpu_state {
+fn wpr2_heap_params(
+    heap_params: &gsp::GspFwHeapParams,
+    vgpu_state: VgpuState,
+    fb_size: u64,
+) -> Result<(u8, u64)> {
+    Ok(match vgpu_state {
         VgpuState::Disabled => (0, heap_params.wpr_heap_size(fb_size)?),
         VgpuState::Enabled { total_vfs } => (
             u8::try_from(total_vfs.get()).map_err(|_| EINVAL)?,
-            heap_params.vgpu_wpr_heap_size(total_vfs.get()),
+            heap_params.vgpu_wpr_heap_size(total_vfs.get())?,
         ),
     })
 }
@@ -323,16 +326,20 @@ pub(crate) struct FbSizes {
 
 impl FbSizes {
     /// Computes the framebuffer region sizes for GSP-FMC boot.
-    pub(crate) fn new(ctx: &gsp::GspBootContext<'_, '_>) -> Result<Self> {
+    pub(crate) fn new(
+        ctx: &gsp::GspBootContext<'_, '_>,
+        gsp_fw: &GspFirmware<'_>,
+    ) -> Result<Self> {
         let hal = hal::fb_hal(ctx.chipset);
         let fb_size = hal.vidmem_size(ctx.bar);
-        let (vf_partition_count, wpr2_heap_size) = wpr2_heap_params(ctx, fb_size)?;
+        let (vf_partition_count, wpr2_heap_size) =
+            wpr2_heap_params(&gsp_fw.heap_params, *ctx.vgpu_state, fb_size)?;
 
         Ok(Self {
             frts_size: hal.frts_size(),
             wpr2_heap_size,
-            non_wpr_heap_size: hal.non_wpr_heap_size(),
-            pmu_reserved_size: hal.pmu_reserved_size(),
+            non_wpr_heap_size: gsp_fw.heap_params.tlv_non_wpr_heap_size,
+            pmu_reserved_size: gsp_fw.heap_params.tlv_pmu_reserved_size,
             vf_partition_count,
         })
     }

@@ -36,6 +36,8 @@ use core::{
 mod cap;
 mod id;
 mod io;
+#[cfg(CONFIG_PCI_IOV)]
+mod iov;
 mod irq;
 
 pub use self::cap::{

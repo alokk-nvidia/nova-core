@@ -132,7 +132,7 @@ where
 ///
 /// The instances kept in the registry borrow the GPU resources below, which makes this type
 /// invariant over `'gpu`.
-#[pin_data]
+#[pin_data(PinnedDrop)]
 struct VgpuManagerInner<'gpu> {
     #[pin]
     instances: Mutex<VgpuInstances<'gpu>>,
@@ -173,5 +173,12 @@ impl<'gpu> VgpuManager<'gpu> {
                 fifo_engine_list,
             }),
         })
+    }
+}
+
+#[pinned_drop]
+impl PinnedDrop for VgpuManagerInner<'_> {
+    fn drop(self: Pin<&mut Self>) {
+        self.instances.lock().release_all(&self);
     }
 }

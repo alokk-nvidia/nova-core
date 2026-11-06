@@ -25,6 +25,7 @@ use crate::{
                 MessagePayload, //
             },
             Cmdq,
+            NoReply, //
         },
         nvkv::{
             nvkv_words,
@@ -35,12 +36,14 @@ use crate::{
         GmcCommandId,
         GSP_PAGE_SIZE, //
     },
+    sbuffer::SBufferIter,
     vgpu::{
         fw::commands::{
             AssignedVfVgpuType,
             VgpuProperties,
             VgpuPropertiesSchema, //
         },
+        instance::Gfid,
         Dbdf,
     },
 };
@@ -156,4 +159,67 @@ impl CommandToGsp for BootloadPluginTask<'_> {
 pub(super) fn send_bootload(_dev: &device::Device, cmdq: &Cmdq<'_>, payload: &[u64]) -> Result {
     cmdq.send_gmc_command(BootloadPluginTask(payload), |_| Ok(()))?
         .map_err(|_| EIO)
+}
+
+/// The `SHUTDOWN_GSP_VGPU_PLUGIN_TASK` command.
+///
+/// The GSP does not answer it, and sends a `SHUTDOWN_GSP_VGPU_PLUGIN_TASK_COMPLETE` event carrying
+/// the same GFID once the task has stopped.
+struct ShutdownPluginTask(Gfid);
+
+impl CommandToGsp for ShutdownPluginTask {
+    const COMMAND: GmcCommandId = GmcCommandId::ShutdownGspVgpuPluginTask;
+    type Command = u32;
+    type Reply = NoReply;
+    const MAX_REPLY_SIZE: u32 = 0;
+    const COMPLETION_TIMEOUT: Delta = Delta::from_secs(10);
+    type InitError = Infallible;
+
+    fn init(&self) -> impl Init<Self::Command, Self::InitError> {
+        u32::from(self.0.get()).to_le()
+    }
+}
+
+/// The `CLEANUP_GSP_VGPU_PLUGIN_RESOURCES` command.
+struct CleanupPluginResources(Gfid);
+
+impl CommandToGsp for CleanupPluginResources {
+    const COMMAND: GmcCommandId = GmcCommandId::CleanupGspVgpuPluginResources;
+    type Command = u32;
+    type Reply = ();
+    const MAX_REPLY_SIZE: u32 = 0;
+    type InitError = Infallible;
+
+    fn init(&self) -> impl Init<Self::Command, Self::InitError> {
+        u32::from(self.0.get()).to_le()
+    }
+}
+
+/// Shut down a vGPU plugin task and wait for its completion event.
+pub(super) fn send_shutdown(dev: &device::Device, cmdq: &Cmdq<'_>, gfid: Gfid) -> Result {
+    cmdq.send_gmc_command_await_event(ShutdownPluginTask(gfid), |event| {
+        let command = event.header().command();
+        if !matches!(
+            command.id(),
+            Ok(GmcCommandId::ShutdownGspVgpuPluginTaskComplete)
+        ) {
+            dev_dbg!(dev, "shutdown: ignoring GMC event {:?}\n", command);
+            return Ok(None);
+        }
+
+        let (payload_0, payload_1) = event.payload();
+        let mut event_gfid = [0u8; size_of::<u32>()];
+        SBufferIter::new_reader([payload_0, payload_1]).read_exact(&mut event_gfid)?;
+
+        Ok((u32::from_le_bytes(event_gfid) == u32::from(gfid.get())).then_some(()))
+    })
+}
+
+/// Release firmware resources after a plugin task has stopped.
+pub(super) fn send_cleanup(dev: &device::Device, cmdq: &Cmdq<'_>, gfid: Gfid) -> Result {
+    cmdq.send_gmc_command(CleanupPluginResources(gfid), |_| Ok(()))?
+        .map_err(|_| EIO)?;
+
+    dev_dbg!(dev, "cleanup: gfid={} done\n", gfid.get());
+    Ok(())
 }

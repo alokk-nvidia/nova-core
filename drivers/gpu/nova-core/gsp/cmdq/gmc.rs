@@ -367,7 +367,6 @@ impl Cmdq<'_> {
     ///   framing validation.
     ///
     /// Error codes returned by the command initializer and by `on_event` are propagated as-is.
-    #[expect(dead_code)]
     pub(crate) fn send_gmc_command_await_event<C, R>(
         &self,
         command: C,

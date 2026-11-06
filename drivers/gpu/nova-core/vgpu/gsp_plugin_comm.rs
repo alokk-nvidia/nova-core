@@ -206,7 +206,6 @@ impl<'map, 'gpu> CommBufferRegion<'map, 'gpu> {
     }
 
     /// Invalidate the PTEs and release the communication mapping.
-    #[expect(dead_code)]
     pub(super) fn unmap(&mut self) -> Result {
         self.map.unmap()
     }

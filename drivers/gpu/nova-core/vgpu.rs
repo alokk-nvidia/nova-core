@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 use core::num::NonZero;
 
@@ -85,7 +86,7 @@ impl VgpuManager {
     }
 
     /// Returns the detected vGPU state for this boot.
-    pub(crate) fn state(&self) -> VgpuState {
-        self.state
+    pub(crate) fn state(&self) -> &VgpuState {
+        &self.state
     }
 }

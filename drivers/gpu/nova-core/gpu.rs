@@ -54,7 +54,10 @@ use crate::{
         Timer,
         TimerState, //
     },
-    vgpu::VgpuState,
+    vgpu::{
+        VgpuManager,
+        VgpuState, //
+    },
 };
 
 #[cfg_attr(not(CONFIG_KUNIT = "y"), expect(dead_code))]
@@ -395,6 +398,7 @@ impl<'a> GspSubtree<'a> {
 #[pin_data]
 pub(crate) struct Gpu<'gpu> {
     pub(crate) spec: Spec,
+    vgpu: Option<VgpuManager<'chid_pool>>,
     /// GSP event interrupt registration, and the enable of its subtree.
     ///
     /// Must be kept declared *before* `gsp_resources`, so that the handler is unregistered, and
@@ -602,6 +606,20 @@ impl<'gpu> Gpu<'gpu> {
                     bar1,
                 )
             },
+
+            vgpu: {
+                let info = &gsp_resources.boot_result.static_info;
+                match gsp_resources.vgpu_state {
+                    VgpuState::Disabled => None,
+                    VgpuState::Enabled { .. } => Some(VgpuManager::new(
+                        chid_pool.get_ref(),
+                        &info.fifo_engine_list(),
+                        info.vmmu_segment_size,
+                        TOTAL_CHANNELS,
+                    )),
+                }
+            },
+
         })
     }
 

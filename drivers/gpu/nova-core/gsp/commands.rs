@@ -11,7 +11,7 @@ use core::{
 
 use kernel::prelude::*;
 
-use super::fw::commands::FifoEngineList;
+pub(crate) use super::fw::commands::FifoEngineList;
 
 /// The static GPU configuration, which GSP-RM reports in reply to [`GspInit`](gmc::GspInit).
 pub struct GspStaticInfo {
@@ -25,6 +25,8 @@ pub struct GspStaticInfo {
     pub(crate) usable_fb_regions: KVec<Range<u64>>,
     /// Exclusive end of the FB physical address space.
     pub(crate) total_fb_end: u64,
+    /// VMMU segment size in bytes, or zero if GSP-RM omitted it.
+    pub(crate) vmmu_segment_size: u64,
     /// Host-driven engines in firmware FIFO order.
     fifo_engine_list: FifoEngineList,
 }
@@ -68,7 +70,6 @@ impl GspStaticInfo {
     }
 
     /// Returns the host-driven engines in their firmware FIFO order.
-    #[expect(dead_code)]
     pub(crate) fn fifo_engine_list(&self) -> FifoEngineList {
         self.fifo_engine_list
     }

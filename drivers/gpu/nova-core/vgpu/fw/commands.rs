@@ -37,6 +37,7 @@ use super::bindings;
 pub(crate) enum RpcMessage {
     VersionNegotiation = bindings::MESSAGE_NV_VGPU_CPU_RPC_MSG_VERSION_NEGOTIATION,
     SetupConfigParamsAndInit = bindings::MESSAGE_NV_VGPU_CPU_RPC_MSG_SETUP_CONFIG_PARAMS_AND_INIT,
+    UpdateBmeState = bindings::MESSAGE_NV_VGPU_CPU_RPC_MSG_UPDATE_BME_STATE,
 }
 
 #[derive(Clone, Copy)]
@@ -322,6 +323,23 @@ pub(crate) fn encode_plugin_config_params(
             .with_enable_uvm(false)
             .with_vmm_migration(true)
             .into(),
+    };
+
+    let mut encoder = Encoder::new();
+    request.encode(&mut encoder)?;
+    Ok(encoder.finish())
+}
+
+nvkv_encode! {
+    struct PluginSetBmeRequest {
+        bme_enable: Key<bool, 0x0100, u32>,
+    }
+}
+
+/// Encodes a plugin BME state update using the typed NVKV schema.
+pub(crate) fn encode_plugin_set_bme(enable: bool) -> Result<KVVec<u64>> {
+    let request = PluginSetBmeRequest {
+        bme_enable: enable.into(),
     };
 
     let mut encoder = Encoder::new();

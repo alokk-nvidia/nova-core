@@ -31,12 +31,14 @@ use crate::{
 
 use super::{
     commands::{
+        free_ceutils,
         negotiate_plugin_version,
         send_bootload,
         send_cleanup,
         send_plugin_config,
         send_shutdown,
-        set_plugin_bme, //
+        set_plugin_bme,
+        CeUtilsAllocError, //
     },
     fw::commands::{
         encode_plugin_config_params,
@@ -47,6 +49,7 @@ use super::{
     },
     gsp_plugin_comm::CommBufferRegion,
     gsp_plugin_rpc::PluginRpc,
+    scrubber::CeUtils,
     vram::{
         VgpuVramLayout,
         VgpuVramSlot,
@@ -156,12 +159,41 @@ struct VgpuInstance<'gpu> {
     // Unmap the communication region before returning its slot and channel IDs.
     vram_slot: VgpuVramSlot,
     chids: ChannelIdReservation<'gpu>,
+    ceutils: Option<CeUtils>,
     needs_teardown: bool,
     /// An uncertain or failed operation retains resources until device removal.
     failure: Option<Error>,
 }
 
 impl<'gpu> VgpuInstance<'gpu> {
+    fn initialize(&mut self, vgpu: &VgpuManagerInner<'gpu>) -> Result {
+        let ceutils_chid =
+            u32::try_from(self.chids.end.checked_sub(1).ok_or(EINVAL)?).map_err(|_| EOVERFLOW)?;
+        let ceutils = match CeUtils::allocate(vgpu.dev, vgpu.cmdq, self.gfid, ceutils_chid) {
+            Ok(ceutils) => ceutils,
+            Err(CeUtilsAllocError::NotOwned(error)) => return Err(error),
+            Err(CeUtilsAllocError::MayOwn(error)) => {
+                self.failure = Some(error);
+                dev_err!(vgpu.dev, "CeUtils allocation failed: {:?}\n", error);
+                return Err(error);
+            }
+        };
+
+        let result = ceutils.scrub_guest_fb(
+            vgpu.dev,
+            vgpu.cmdq,
+            vgpu.bar_user,
+            vgpu.mm,
+            &self.vram_slot.fbmem,
+        );
+        self.ceutils = Some(ceutils);
+        if let Err(error) = result {
+            // A failed wait does not establish that the submitted scrub has stopped.
+            self.failure = Some(error);
+        }
+        result
+    }
+
     fn activate(&mut self, vgpu: &VgpuManagerInner<'gpu>) -> Result {
         let dev = vgpu.dev;
         self.bootload(dev, vgpu.cmdq, &vgpu.fifo_engine_list)?;
@@ -180,7 +212,17 @@ impl<'gpu> VgpuInstance<'gpu> {
         }
         let result = (|| {
             self.shutdown(vgpu.dev, vgpu.cmdq)?;
-
+            if let Some(ceutils) = self.ceutils.as_ref() {
+                ceutils.scrub_guest_fb(
+                    vgpu.dev,
+                    vgpu.cmdq,
+                    vgpu.bar_user,
+                    vgpu.mm,
+                    &self.vram_slot.fbmem,
+                )?;
+                free_ceutils(vgpu.dev, vgpu.cmdq, self.gfid)?;
+                self.ceutils = None;
+            }
             if self.needs_teardown {
                 send_cleanup(vgpu.dev, vgpu.cmdq, self.gfid)?;
                 self.needs_teardown = false;
@@ -246,7 +288,7 @@ impl<'gpu> VgpuInstance<'gpu> {
             self.dbdf,
             self.vgpu_type.vgpu_type_id,
             self.vm_pid,
-            u32::try_from(self.chids.len()).map_err(|_| EOVERFLOW)?,
+            u32::try_from(self.chids.len().checked_sub(1).ok_or(EINVAL)?).map_err(|_| EOVERFLOW)?,
             self.num_plugin_channels,
         )?;
 
@@ -356,6 +398,9 @@ impl<'gpu> VgpuInstances<'gpu> {
             .map(usize::from_safe_cast)
             .and_then(NonZeroUsize::new)
             .ok_or(EINVAL)?;
+        if channels_per_instance <= cv!(1) {
+            return Err(EINVAL);
+        }
         let chids = vgpu
             .chid_pool
             .reserve_ids(channels_per_instance, Alignment::SZ_1)?;
@@ -382,6 +427,7 @@ impl<'gpu> VgpuInstances<'gpu> {
             plugin_rpc: PluginRpc::new(comm, vgpu.bar, gfid),
             vram_slot,
             chids,
+            ceutils: None,
             needs_teardown: false,
             failure: None,
         })
@@ -436,7 +482,9 @@ impl VgpuManagerInner<'_> {
         instances.instances.reserve(1, GFP_KERNEL)?;
 
         let mut instance = instances.allocate_instance(self, info)?;
-        let result = instance.activate(self);
+        let result = instance
+            .initialize(self)
+            .and_then(|()| instance.activate(self));
 
         if result.is_err() {
             match instance.teardown(self) {

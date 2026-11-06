@@ -22,6 +22,21 @@ use super::{
     PAGE_SIZE, //
 };
 
+/// Rebases the nonempty range `rel`, relative to the start of `base`, onto `base`.
+///
+/// Returns `EINVAL` if `rel` is empty or does not fit within `base`.
+fn rebase(base: &Range<u64>, rel: Range<u64>) -> Result<Range<u64>> {
+    let start = base.start.checked_add(rel.start).ok_or(EINVAL)?;
+    let end = base.start.checked_add(rel.end).ok_or(EINVAL)?;
+
+    // Check that the rebased range on not empty and fits within `base`.
+    if start >= end || end > base.end {
+        return Err(EINVAL);
+    }
+
+    Ok(start..end)
+}
+
 /// A physically contiguous VRAM allocation.
 ///
 /// # Invariants
@@ -36,6 +51,47 @@ impl VramBlock {
     /// Returns the range covered by this VRAM block.
     pub(crate) const fn range(&self) -> &Range<u64> {
         &self.range
+    }
+
+    /// Creates a byte range relative to this allocation, retaining its backing storage.
+    pub(crate) fn region(self: &Arc<Self>, range: Range<u64>) -> Result<VramRegion> {
+        Ok(VramRegion {
+            backing: self.clone(),
+            // INVARIANT: `rebase` returns a nonempty range.
+            range: rebase(&self.range, range)?,
+        })
+    }
+}
+
+/// A byte range that keeps its VRAM allocation alive.
+///
+/// # Invariants
+///
+/// `range.start < range.end`, and `range` lies within the range of `backing`.
+#[derive(Clone)]
+pub(crate) struct VramRegion {
+    backing: Arc<VramBlock>,
+    range: Range<u64>,
+}
+
+impl VramRegion {
+    /// Returns the range covered by this region.
+    pub(crate) const fn range(&self) -> &Range<u64> {
+        &self.range
+    }
+
+    /// Returns the length of this region in bytes.
+    pub(crate) const fn len(&self) -> u64 {
+        self.range.end.saturating_sub(self.range.start)
+    }
+
+    /// Creates a nonempty subregion relative to this view's start.
+    pub(crate) fn subregion(&self, range: Range<u64>) -> Result<Self> {
+        Ok(Self {
+            backing: self.backing.clone(),
+            // INVARIANT: `rebase` returns a nonempty range.
+            range: rebase(&self.range, range)?,
+        })
     }
 }
 

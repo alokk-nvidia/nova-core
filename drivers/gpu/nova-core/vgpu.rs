@@ -21,6 +21,7 @@ use crate::{
     gsp::commands::FifoEngineList, //
 };
 
+mod fw;
 mod hal;
 
 /// vGPU state detected during GPU construction.

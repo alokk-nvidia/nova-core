@@ -16,7 +16,6 @@ use kernel::{
 };
 
 use crate::{
-    gpu::Chipset,
     gsp::{
         commands::GspStaticInfo,
         nvkv::{
@@ -29,6 +28,7 @@ use crate::{
             Required,
             TruncatingArray, //
         },
+        GspBootContext, //
     },
     vgpu::VgpuState, //
 };
@@ -245,16 +245,14 @@ const REGISTRY_ENTRIES: &[(&[u8], u32)] = &[
 ];
 
 impl GspInitRequest {
-    fn build_vf_info(
-        dev: &pci::Device<device::Bound>,
-        vgpu_state: VgpuState,
-    ) -> Result<Option<VfInfo>> {
-        let total_vfs = match vgpu_state {
+    fn build_vf_info(ctx: &GspBootContext<'_, '_>) -> Result<Option<VfInfo>> {
+        let total_vfs = match ctx.vgpu.state() {
             VgpuState::Disabled => return Ok(None),
             VgpuState::Enabled { total_vfs } => total_vfs,
         };
 
-        let sriov = dev
+        let sriov = ctx
+            .pdev
             .config_space_extended()?
             .find_ext_capability::<pci::ExtSriovRegs>()?
             .ok_or(ENODEV)?;
@@ -277,19 +275,18 @@ impl GspInitRequest {
         }))
     }
 
-    /// Creates the request for `dev`.
+    /// Creates the request using the device, chipset and vGPU state from `ctx`.
     ///
-    /// The registry keys are [`REGISTRY_ENTRIES`], plus `RMSetSriovMode` when `vgpu_state` reports
-    /// that vGPU is enabled.
+    /// The registry keys are [`REGISTRY_ENTRIES`], plus `RMSetSriovMode` when the boot context
+    /// reports that vGPU is enabled.
     ///
     /// # Errors
     ///
     /// - `ENOMEM` if the registry list cannot be allocated.
-    pub(crate) fn new(
-        dev: &pci::Device<device::Bound>,
-        chipset: Chipset,
-        vgpu_state: VgpuState,
-    ) -> Result<Self> {
+    pub(crate) fn new(ctx: &GspBootContext<'_, '_>) -> Result<Self> {
+        let dev = ctx.pdev;
+        let chipset = ctx.chipset;
+        let vgpu_state = ctx.vgpu.state();
         let mut regkeys = KVVec::new();
         for &(name, value) in REGISTRY_ENTRIES {
             regkeys.push(RegKey::new(name, value), GFP_KERNEL)?;
@@ -312,7 +309,7 @@ impl GspInitRequest {
             host_arch: HostArch::host().into(),
             bus_device_func: u64::from(DomainBusDevice::new(dev)).into(),
             regkeys,
-            vf_info: Self::build_vf_info(dev, vgpu_state)?,
+            vf_info: Self::build_vf_info(ctx)?,
         })
     }
 }

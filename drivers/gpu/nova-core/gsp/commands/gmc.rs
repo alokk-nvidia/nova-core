@@ -6,15 +6,12 @@
 use core::convert::Infallible;
 
 use kernel::{
-    device,
-    pci,
     prelude::*,
     time::Delta,
     transmute::AsBytes, //
 };
 
 use crate::{
-    gpu::Chipset,
     gsp::{
         cmdq::{
             gmc::{
@@ -39,9 +36,9 @@ use crate::{
             Schema,
             UnknownKeyPolicy, //
         },
+        GspBootContext, //
     },
-    sbuffer::SBufferIter,
-    vgpu::VgpuState, //
+    sbuffer::SBufferIter, //
 };
 
 /// The `GSP_INIT` command, which carries the system information and registry keys to GSP-RM.
@@ -53,18 +50,14 @@ pub(crate) struct GspInit {
 }
 
 impl GspInit {
-    /// Builds the request for `pdev`.
+    /// Builds the request using the device, chipset and vGPU state from `ctx`.
     ///
     /// # Errors
     ///
     /// - `ENOMEM` if the request or the encoder buffer cannot be allocated.
-    pub(crate) fn new(
-        pdev: &pci::Device<device::Bound>,
-        chipset: Chipset,
-        vgpu_state: VgpuState,
-    ) -> Result<Self> {
+    pub(crate) fn new(ctx: &GspBootContext<'_, '_>) -> Result<Self> {
         let mut encoder = Encoder::new();
-        GspInitRequest::new(pdev, chipset, vgpu_state)?.encode(&mut encoder)?;
+        GspInitRequest::new(ctx)?.encode(&mut encoder)?;
 
         Ok(Self {
             payload: encoder.finish(),

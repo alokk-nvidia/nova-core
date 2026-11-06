@@ -97,7 +97,7 @@ impl<'gsp> super::Gsp<'gsp> {
         let bootloader_app_version = gsp_fw.bootloader.app_version;
         let static_info = self
             .cmdq
-            .send_gmc_command(GspInit::new(pdev, chipset, ctx.vgpu.state())?, |event| {
+            .send_gmc_command(GspInit::new(ctx)?, |event| {
                 load_exec::handle_event(
                     ctx,
                     generic_bootloader.as_ref(),

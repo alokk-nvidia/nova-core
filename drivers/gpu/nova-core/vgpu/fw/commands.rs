@@ -20,10 +20,10 @@ use crate::{
         Array,
         Encodable,
         Encoder,
-        Index, //
+        Index,
         Key,
         KeyId,
-        Required,
+        Required, //
     },
     mm::vram::VramRegion,
     vgpu::Dbdf, //
@@ -328,6 +328,50 @@ pub(crate) fn encode_plugin_config_params(
     let mut encoder = Encoder::new();
     request.encode(&mut encoder)?;
     Ok(encoder.finish())
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct AllocCeutilsRequest {
+    pub(crate) gfid: u32,
+    pub(crate) fixed_chid: u32,
+    pub(crate) force_ceid: u32,
+    pub(crate) swizz_id: u32,
+}
+
+// SAFETY: All fields are integers, and the struct has no padding.
+unsafe impl kernel::transmute::AsBytes for AllocCeutilsRequest {}
+
+// SAFETY: All fields are integers, for which all bit patterns are valid.
+unsafe impl kernel::transmute::FromBytes for AllocCeutilsRequest {}
+
+#[repr(C)]
+#[derive(FromBytes, IntoBytes)]
+pub(crate) struct AllocCeutilsResponse {
+    pub(crate) semaphore_address: u64,
+    pub(crate) semaphore_aperture: u32,
+    _reserved: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct ScrubGuestFbRequest {
+    pub(crate) gfid: u32,
+    pub(crate) reserved: u32,
+    pub(crate) fb_offset: u64,
+    pub(crate) fb_size: u64,
+}
+
+// SAFETY: All fields are integers, and the struct has no padding.
+unsafe impl kernel::transmute::AsBytes for ScrubGuestFbRequest {}
+
+// SAFETY: All fields are integers, for which all bit patterns are valid.
+unsafe impl kernel::transmute::FromBytes for ScrubGuestFbRequest {}
+
+#[repr(C)]
+#[derive(FromBytes, IntoBytes)]
+pub(crate) struct ScrubGuestFbResponse {
+    pub(crate) work_id: u64,
 }
 
 nvkv_encode! {

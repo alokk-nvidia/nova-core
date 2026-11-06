@@ -31,6 +31,8 @@ pub(super) use bindings::{
     VGPU_CPU_GSP_VGPU_TASK_LOG_BUFF_REGION_SIZE, //
 };
 
+pub(super) use bindings::NV_ADDR_FBMEM;
+
 /// State observed in the response buffer for an expected RPC sequence.
 pub(super) enum RpcResponse {
     Pending {

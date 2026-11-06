@@ -10,6 +10,7 @@ use core::convert::Infallible;
 
 use kernel::{
     device,
+    num::casts::usize_as_u64,
     prelude::*,
     time::Delta,
     transmute::AsBytes, //
@@ -36,16 +37,22 @@ use crate::{
         GmcCommandId,
         GSP_PAGE_SIZE, //
     },
+    mm::PAGE_SIZE,
     sbuffer::SBufferIter,
     vgpu::{
         fw::{
             commands::{
                 encode_plugin_set_bme,
+                AllocCeutilsRequest,
+                AllocCeutilsResponse,
                 AssignedVfVgpuType,
+                ScrubGuestFbRequest,
+                ScrubGuestFbResponse,
                 VgpuProperties,
                 VgpuPropertiesSchema, //
             },
             RpcMessage,
+            NV_ADDR_FBMEM, //
         },
         gsp_plugin_rpc::PluginRpc,
         instance::Gfid,
@@ -254,4 +261,150 @@ pub(super) fn set_plugin_bme(
 ) -> Result {
     let bme = encode_plugin_set_bme(enable)?;
     rpc.rpc_call_nvkv(dev, RpcMessage::UpdateBmeState, &bme)
+}
+
+impl CommandToGsp for AllocCeutilsRequest {
+    const COMMAND: GmcCommandId = GmcCommandId::VgpuMgrAllocGspCeutils;
+    type Command = Self;
+    type Reply = AllocCeutilsResponse;
+    const MAX_REPLY_SIZE: u32 = cv!(size_of::<AllocCeutilsResponse>());
+    type InitError = Infallible;
+
+    fn init(&self) -> impl Init<Self::Command, Self::InitError> {
+        *self
+    }
+}
+
+impl MessageFromGsp for AllocCeutilsResponse {
+    type InitError = Error;
+
+    fn read(payload: &mut MessagePayload<'_>) -> Result<Self, Self::InitError> {
+        payload.read()
+    }
+}
+
+/// The `VGPU_MGR_FREE_GSP_CEUTILS` command.
+struct FreeCeutils(Gfid);
+
+impl CommandToGsp for FreeCeutils {
+    const COMMAND: GmcCommandId = GmcCommandId::VgpuMgrFreeGspCeutils;
+    type Command = u32;
+    type Reply = ();
+    const MAX_REPLY_SIZE: u32 = 0;
+    type InitError = Infallible;
+
+    fn init(&self) -> impl Init<Self::Command, Self::InitError> {
+        u32::from(self.0.get()).to_le()
+    }
+}
+
+impl CommandToGsp for ScrubGuestFbRequest {
+    const COMMAND: GmcCommandId = GmcCommandId::VgpuMgrScrubGuestFb;
+    type Command = Self;
+    type Reply = ScrubGuestFbResponse;
+    const MAX_REPLY_SIZE: u32 = cv!(size_of::<ScrubGuestFbResponse>());
+    type InitError = Infallible;
+
+    fn init(&self) -> impl Init<Self::Command, Self::InitError> {
+        *self
+    }
+}
+
+impl MessageFromGsp for ScrubGuestFbResponse {
+    type InitError = Error;
+
+    fn read(payload: &mut MessagePayload<'_>) -> Result<Self, Self::InitError> {
+        payload.read()
+    }
+}
+
+/// Whether a failed allocation may still have transferred CHID ownership to firmware.
+#[expect(dead_code)]
+pub(super) enum CeUtilsAllocError {
+    /// A matching firmware response explicitly rejected the allocation.
+    NotOwned(Error),
+    /// The request may have completed despite a transport or response-validation error.
+    MayOwn(Error),
+}
+
+/// Allocate a CeUtils channel and validate its semaphore description.
+#[expect(dead_code)]
+pub(super) fn alloc_ceutils(
+    dev: &device::Device,
+    cmdq: &Cmdq<'_>,
+    gfid: Gfid,
+    chid: u32,
+) -> core::result::Result<u64, CeUtilsAllocError> {
+    let request = AllocCeutilsRequest {
+        gfid: u32::from(gfid.get()).to_le(),
+        fixed_chid: chid.to_le(),
+        force_ceid: u32::MAX.to_le(),
+        swizz_id: 0,
+    };
+
+    dev_dbg!(dev, "alloc CeUtils: gfid={} chid={}\n", gfid.get(), chid,);
+
+    let response = cmdq
+        .send_gmc_command(request, |_| Ok(()))
+        .map_err(CeUtilsAllocError::MayOwn)?
+        .map_err(|_| CeUtilsAllocError::NotOwned(EIO))?;
+
+    let semaphore_address = u64::from_le(response.semaphore_address);
+    let semaphore_aperture = u32::from_le(response.semaphore_aperture);
+    let page_size = usize_as_u64(PAGE_SIZE);
+
+    if semaphore_address == 0
+        || !semaphore_address.is_multiple_of(page_size)
+        || semaphore_aperture != NV_ADDR_FBMEM
+    {
+        return Err(CeUtilsAllocError::MayOwn(EINVAL));
+    }
+
+    dev_dbg!(
+        dev,
+        "alloc CeUtils: gfid={} semaphore={:#x}\n",
+        gfid.get(),
+        semaphore_address,
+    );
+    Ok(semaphore_address)
+}
+
+/// Release a CeUtils allocation, including one whose allocation reply was lost.
+#[expect(dead_code)]
+pub(super) fn free_ceutils(dev: &device::Device, cmdq: &Cmdq<'_>, gfid: Gfid) -> Result {
+    dev_dbg!(dev, "free CeUtils: gfid={}\n", gfid.get());
+
+    cmdq.send_gmc_command(FreeCeutils(gfid), |_| Ok(()))?
+        .map_err(|_| EIO)
+}
+
+/// Submit an asynchronous guest FB scrub and return its work identifier.
+#[expect(dead_code)]
+pub(super) fn submit_ceutils_scrub(
+    dev: &device::Device,
+    cmdq: &Cmdq<'_>,
+    gfid: Gfid,
+    fb_offset: u64,
+    fb_size: u64,
+) -> Result<u32> {
+    let request = ScrubGuestFbRequest {
+        gfid: u32::from(gfid.get()).to_le(),
+        reserved: 0,
+        fb_offset: fb_offset.to_le(),
+        fb_size: fb_size.to_le(),
+    };
+
+    dev_dbg!(
+        dev,
+        "submit scrub: gfid={} offset={:#x} size={:#x}\n",
+        gfid.get(),
+        fb_offset,
+        fb_size,
+    );
+
+    let response = cmdq
+        .send_gmc_command(request, |_| Ok(()))?
+        .map_err(|_| EIO)?;
+
+    u32::try_from(u64::from_le(response.work_id)).map_err(|_| EOVERFLOW)
 }

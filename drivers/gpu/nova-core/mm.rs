@@ -133,7 +133,6 @@ where
 
 impl<'gpu> SharedGpuMm<'gpu> {
     /// Creates a pin-initializer sharing `mm`.
-    #[expect(dead_code)]
     pub(crate) fn new(mm: GpuMm<'gpu>) -> impl PinInit<Self> + 'gpu {
         pin_init!(Self {
             inner <- new_mutex!(mm, "nova-core::gpu-mm"),

@@ -6,8 +6,10 @@ use core::num::NonZero;
 use kernel::{
     bitfield,
     device,
+    new_mutex,
     pci,
-    prelude::*, //
+    prelude::*,
+    sync::Mutex, //
 };
 
 use crate::{
@@ -20,11 +22,15 @@ use crate::{
         Chipset, //
     },
     gsp::commands::FifoEngineList, //
+    mm::{
+        SharedGpuMm, //
+    }, //
 };
 
 mod commands;
 mod fw;
 mod hal;
+mod instance;
 mod vram;
 
 bitfield! {
@@ -99,32 +105,56 @@ impl VgpuState {
     }
 }
 
+use self::instance::VgpuInstances;
+
 /// Runtime resources for an enabled vGPU boot.
-pub(crate) struct VgpuManager<'gpu> {
-    #[expect(dead_code)]
+#[pin_data]
+pub(crate) struct VgpuManager<'gpu>
+where
+    // Hide the invariant resource lifetime of the instance registry so `VgpuManager` remains
+    // covariant.
+    exists<'res>: 'gpu,
+{
+    #[pin]
+    #[uses('res: invariant)]
+    inner: VgpuManagerInner<'res>,
+}
+
+/// Inner state of [`VgpuManager`].
+///
+/// The instances kept in the registry borrow the GPU resources below, which makes this type
+/// invariant over `'gpu`.
+#[pin_data]
+struct VgpuManagerInner<'gpu> {
+    #[pin]
+    instances: Mutex<VgpuInstances<'gpu>>,
+    mm: &'gpu SharedGpuMm<'gpu>,
     chid_pool: &'gpu ChannelIdPool,
     /// VMMU segment size in bytes, or zero if GSP-RM omitted it.
-    #[expect(dead_code)]
     vmmu_segment_size: u64,
-    #[expect(dead_code)]
     total_channels: u32,
-    #[expect(dead_code)]
     fifo_engine_list: FifoEngineList,
 }
 
 impl<'gpu> VgpuManager<'gpu> {
     /// Retains runtime parameters from a completed vGPU-enabled GSP boot.
     pub(crate) fn new(
+        mm: &'gpu SharedGpuMm<'gpu>,
         chid_pool: &'gpu ChannelIdPool,
         fifo_engine_list: &FifoEngineList,
         vmmu_segment_size: u64,
         total_channels: u32,
-    ) -> Self {
-        Self {
-            chid_pool,
-            vmmu_segment_size,
-            total_channels,
-            fifo_engine_list: *fifo_engine_list,
-        }
+    ) -> impl PinInit<Self> + use<'gpu> {
+        let fifo_engine_list = *fifo_engine_list;
+        pin_init!(Self {
+            inner <- pin_init!(VgpuManagerInner {
+                instances <- new_mutex!(VgpuInstances::new(), "nova-core::vgpu-instances"),
+                mm,
+                chid_pool,
+                vmmu_segment_size,
+                total_channels,
+                fifo_engine_list,
+            }),
+        })
     }
 }

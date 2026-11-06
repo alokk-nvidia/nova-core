@@ -47,6 +47,7 @@ use crate::{
         bar_user::BarUser,
         pagetable::MmuVersion,
         GpuMm,
+        SharedGpuMm,
         VramAddress, //
     },
     num,
@@ -60,14 +61,16 @@ use crate::{
     },
 };
 
-#[cfg_attr(not(CONFIG_KUNIT = "y"), expect(dead_code))]
 mod channel;
 mod hal;
 mod regs;
 
 use self::channel::TOTAL_CHANNELS;
 
-pub(crate) use self::channel::ChannelIdPool;
+pub(crate) use self::channel::{
+    ChannelIdPool,
+    ChannelIdReservation, //
+};
 
 macro_rules! define_chipset {
     ({ $($variant:ident),* $(,)* }) =>
@@ -398,7 +401,9 @@ impl<'a> GspSubtree<'a> {
 #[pin_data]
 pub(crate) struct Gpu<'gpu> {
     pub(crate) spec: Spec,
-    vgpu: Option<VgpuManager<'chid_pool>>,
+    /// Drops before the MM and BAR1 mappings needed for instance teardown.
+    #[uses('bar_user, 'chid_pool)]
+    vgpu: Option<Pin<KBox<VgpuManager<'mm>>>>,
     /// GSP event interrupt registration, and the enable of its subtree.
     ///
     /// Must be kept declared *before* `gsp_resources`, so that the handler is unregistered, and
@@ -411,7 +416,8 @@ pub(crate) struct Gpu<'gpu> {
     ///
     /// Must be kept declared *before* `gsp_resources`, so that its components are dropped while
     /// the GSP is still operational.
-    mm: GpuMm<'gpu>,
+    #[pin]
+    mm: SharedGpuMm<'gpu>,
     /// BAR1 user interface for CPU access to GPU virtual memory.
     #[pin]
     bar_user: BarUser<'gpu>,
@@ -576,7 +582,7 @@ impl<'gpu> Gpu<'gpu> {
             },
 
             // Create GPU memory manager owning memory management resources.
-            mm: {
+            mm <- {
                 let info = gsp_resources.static_info();
                 let usable_vram = info.usable_fb_regions.first().ok_or(ENODEV)?;
                 let buddy_params = GpuBuddyParams {
@@ -585,12 +591,12 @@ impl<'gpu> Gpu<'gpu> {
                     chunk_size: Alignment::SZ_4K,
                 };
 
-                GpuMm::new(
+                SharedGpuMm::new(GpuMm::new(
                     bar,
                     gsp_resources.spec.chipset,
                     buddy_params,
                     VramAddress::from_raw(info.total_fb_end),
-                )?
+                )?)
             },
 
             // Create BAR1 user interface for CPU access to GPU virtual memory.
@@ -611,15 +617,18 @@ impl<'gpu> Gpu<'gpu> {
                 let info = &gsp_resources.boot_result.static_info;
                 match gsp_resources.vgpu_state {
                     VgpuState::Disabled => None,
-                    VgpuState::Enabled { .. } => Some(VgpuManager::new(
-                        chid_pool.get_ref(),
-                        &info.fifo_engine_list(),
-                        info.vmmu_segment_size,
-                        TOTAL_CHANNELS,
-                    )),
+                    VgpuState::Enabled { .. } => Some(KBox::pin_init(
+                        VgpuManager::new(
+                            mm.get_ref(),
+                            chid_pool.get_ref(),
+                            &info.fifo_engine_list(),
+                            info.vmmu_segment_size,
+                            TOTAL_CHANNELS,
+                        ),
+                        GFP_KERNEL,
+                    )?),
                 }
             },
-
         })
     }
 
@@ -652,14 +661,16 @@ impl<'gpu> Gpu<'gpu> {
         let dev = pdev.as_ref();
         let info = this.gsp_resources.static_info();
 
-        if let Err(err) = crate::mm::selftest::run(
-            dev,
-            this.mm,
-            &info.usable_fb_regions,
-            this.bar_user.as_ref().get_ref(),
-            info.bar1_pde_base,
-            this.spec.chipset,
-        ) {
+        if let Err(err) = this.mm.with_locked(|mm| {
+            crate::mm::selftest::run(
+                dev,
+                mm,
+                &info.usable_fb_regions,
+                this.bar_user.get_ref(),
+                info.bar1_pde_base,
+                this.spec.chipset,
+            )
+        }) {
             dev_err!(dev, "self-tests failed: {:?}\n", err);
         }
     }

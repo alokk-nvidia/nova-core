@@ -93,7 +93,6 @@ pub(super) struct VgpuVramSlotPool {
     fb_region_size: u64,
 }
 
-#[expect(dead_code)]
 impl VgpuVramSlotPool {
     /// Reserve the VRAM for all possible slots of `layout`, and returns a [`VgpuVramSlotPool`] that
     /// can provide these slots.

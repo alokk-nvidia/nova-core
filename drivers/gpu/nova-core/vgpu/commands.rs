@@ -38,11 +38,15 @@ use crate::{
     },
     sbuffer::SBufferIter,
     vgpu::{
-        fw::commands::{
-            AssignedVfVgpuType,
-            VgpuProperties,
-            VgpuPropertiesSchema, //
+        fw::{
+            commands::{
+                AssignedVfVgpuType,
+                VgpuProperties,
+                VgpuPropertiesSchema, //
+            },
+            RpcMessage,
         },
+        gsp_plugin_rpc::PluginRpc,
         instance::Gfid,
         Dbdf,
     },
@@ -222,4 +226,12 @@ pub(super) fn send_cleanup(dev: &device::Device, cmdq: &Cmdq<'_>, gfid: Gfid) ->
 
     dev_dbg!(dev, "cleanup: gfid={} done\n", gfid.get());
     Ok(())
+}
+
+/// Negotiate the host protocol with a bootloaded GSP plugin.
+pub(super) fn negotiate_plugin_version(
+    dev: &device::Device,
+    rpc: &mut PluginRpc<'_, '_>,
+) -> Result {
+    rpc.rpc_call(dev, RpcMessage::VersionNegotiation, &[])
 }

@@ -31,7 +31,6 @@ use crate::{
 use super::bindings;
 
 /// Message types supported by the nova-core plugin RPC channel.
-#[expect(dead_code)]
 #[derive(Clone, Copy)]
 #[repr(u32)]
 pub(crate) enum RpcMessage {

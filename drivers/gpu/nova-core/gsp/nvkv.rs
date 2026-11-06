@@ -20,10 +20,39 @@ use core::{
 use kernel::{
     alloc::ArrayVec,
     bitfield,
-    num::Bounded, //
+    num::Bounded,
+    prelude::*, //
 };
 
 use crate::bounded_enum;
+
+use crate::sbuffer::SBufferIter;
+
+/// Joins the two halves of a wrapped payload into the `u64` words an NVKV stream is made of.
+///
+/// # Errors
+///
+/// - `EINVAL` if the combined length is not a whole number of words.
+/// - `ENOMEM` if the buffer cannot be allocated.
+pub(crate) fn nvkv_words(payload_0: &[u8], payload_1: &[u8]) -> Result<KVVec<u64>> {
+    const WORD_SIZE: usize = size_of::<u64>();
+
+    // Each byte slice is at most `isize::MAX` bytes, so their sum fits in `usize`.
+    let len = payload_0.len() + payload_1.len();
+    if len % WORD_SIZE != 0 {
+        return Err(EINVAL);
+    }
+
+    let mut words = KVVec::with_capacity(len / WORD_SIZE, GFP_KERNEL)?;
+    let mut bytes = SBufferIter::new_reader([payload_0, payload_1]);
+    for _ in 0..len / WORD_SIZE {
+        let mut word = [0u8; WORD_SIZE];
+        bytes.read_exact(&mut word)?;
+        words.push(u64::from_le_bytes(word), GFP_KERNEL)?;
+    }
+
+    Ok(words)
+}
 
 mod encode;
 pub(crate) use encode::*;

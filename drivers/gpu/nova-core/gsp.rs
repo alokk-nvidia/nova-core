@@ -22,7 +22,7 @@ pub(crate) mod commands;
 mod fw;
 mod load_exec;
 mod logbuffer;
-mod nvkv;
+pub(crate) mod nvkv;
 mod regs;
 
 use logbuffer::LogBuffers;

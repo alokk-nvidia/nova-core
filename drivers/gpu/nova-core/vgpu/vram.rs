@@ -36,7 +36,6 @@ pub(super) struct VgpuVramLayout {
     fb_align: u64,
 }
 
-#[expect(dead_code)]
 impl VgpuVramLayout {
     pub(super) fn new(
         type_id: u32,

@@ -34,6 +34,12 @@ mod vgpu;
 
 use debugfs::DebugfsData;
 
+#[cfg(CONFIG_PCI_IOV)]
+pub use vgpu::vgpu_api::{
+    NovaCoreVfApi,
+    VgpuTypeInfo, //
+};
+
 pub(crate) const MODULE_NAME: &core::ffi::CStr = <LocalModule as kernel::ModuleMetadata>::NAME;
 
 /// Pointer to the [`DebugfsData`] of the module.

@@ -80,7 +80,6 @@ static_assert!(size_of::<RawControlRegion>() == cv!(fw::VGPU_CPU_GSP_CTRL_BUFF_R
 static_assert!(size_of::<RawResponseRegion>() == cv!(fw::VGPU_CPU_GSP_RESPONSE_BUFF_REGION_SIZE));
 
 /// Physical VRAM regions containing the vGPU plugin logs.
-#[expect(dead_code)]
 pub(super) struct PluginLogRegions {
     pub(super) init: VramRegion,
     pub(super) vgpu: VramRegion,
@@ -94,7 +93,6 @@ pub(super) struct CommBufferRegion<'map, 'gpu> {
     map: BarMapping<'map, 'gpu>,
 }
 
-#[expect(dead_code)]
 impl<'map, 'gpu> CommBufferRegion<'map, 'gpu> {
     /// Map the communication portion of a plugin management heap.
     pub(super) fn new(

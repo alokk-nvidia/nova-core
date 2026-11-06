@@ -83,7 +83,6 @@ impl MessageFromGsp for AssignedVfVgpuType {
 }
 
 /// Query the vGPU type assigned to a VF by its DBDF.
-#[expect(dead_code)]
 pub(super) fn query_assigned_vf_type(
     _dev: &device::Device,
     cmdq: &Cmdq<'_>,
@@ -126,7 +125,6 @@ impl MessageFromGsp for KBox<VgpuProperties> {
 }
 
 /// Query and decode the firmware properties of one vGPU type.
-#[expect(dead_code)]
 pub(super) fn query_vgpu_properties(
     _dev: &device::Device,
     cmdq: &Cmdq<'_>,
@@ -261,6 +259,14 @@ pub(super) fn set_plugin_bme(
 ) -> Result {
     let bme = encode_plugin_set_bme(enable)?;
     rpc.rpc_call_nvkv(dev, RpcMessage::UpdateBmeState, &bme)
+}
+
+/// Reset an active GSP plugin.
+pub(super) fn reset_plugin(
+    dev: &device::Device<device::Bound>,
+    rpc: &mut PluginRpc<'_, '_>,
+) -> Result {
+    rpc.rpc_call(dev, RpcMessage::Reset, &[])
 }
 
 impl CommandToGsp for AllocCeutilsRequest {

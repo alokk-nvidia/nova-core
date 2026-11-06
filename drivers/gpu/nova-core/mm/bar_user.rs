@@ -185,7 +185,6 @@ pub(crate) struct BarMapping<'map, 'gpu> {
     unmap_error: Option<Error>,
 }
 
-#[expect(dead_code)]
 impl<'map, 'gpu> BarMapping<'map, 'gpu> {
     /// Maps `region`, which must start and end on a page boundary.
     pub(crate) fn new(

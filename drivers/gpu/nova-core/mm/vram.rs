@@ -74,7 +74,6 @@ pub(crate) struct VramRegion {
     range: Range<u64>,
 }
 
-#[expect(dead_code)]
 impl VramRegion {
     /// Returns the range covered by this region.
     pub(crate) const fn range(&self) -> &Range<u64> {

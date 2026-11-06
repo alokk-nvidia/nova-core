@@ -12,6 +12,8 @@ mod r000_00;
 // Alias to avoid repeating the version number with every use.
 use r000_00 as bindings;
 
+pub(super) use commands::RpcMessage;
+
 pub(super) use bindings::{
     GSP_PLUGIN_BOOTLOADED,
     VGPU_CPU_GSP_COMMUNICATION_BUFF_TOTAL_SIZE,
@@ -28,3 +30,14 @@ pub(super) use bindings::{
     VGPU_CPU_GSP_RESPONSE_BUFF_REGION_SIZE,
     VGPU_CPU_GSP_VGPU_TASK_LOG_BUFF_REGION_SIZE, //
 };
+
+/// State observed in the response buffer for an expected RPC sequence.
+pub(super) enum RpcResponse {
+    Pending {
+        /// Last sequence completed by firmware.
+        sequence: u32,
+    },
+    Complete {
+        status: u32,
+    },
+}

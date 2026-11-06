@@ -29,7 +29,9 @@ use crate::mm::{
 use super::fw::{
     self,
     RawControlRegion,
-    RawResponseRegion, //
+    RawResponseRegion,
+    RpcMessage,
+    RpcResponse, //
 };
 
 /// Layout of the plugin communication region, located at the start of the management heap.
@@ -157,7 +159,6 @@ impl<'map, 'gpu> CommBufferRegion<'map, 'gpu> {
     }
 
     /// Initialize the shared control and response buffers for plugin RPC.
-    #[expect(dead_code)]
     pub(super) fn initialize(&self) -> Result {
         let comm = self.view()?;
         let control = io_project!(comm, .control.__bindgen_anon_1);
@@ -203,6 +204,38 @@ impl<'map, 'gpu> CommBufferRegion<'map, 'gpu> {
         io_write!(control, .version, fw::VGPU_CPU_GSP_CTRL_BUFF_VERSION);
 
         Ok(())
+    }
+
+    /// Copy and publish one RPC request to firmware.
+    pub(super) fn submit(&self, message: RpcMessage, sequence: u32, data: &[u8]) -> Result {
+        let comm = self.view()?;
+        let control = io_project!(comm, .control.__bindgen_anon_1);
+        let buffer = io_project!(comm, .message);
+
+        if data.len() > buffer.size() {
+            return Err(E2BIG);
+        }
+        io_project!(buffer, [try: ..data.len()]).copy_from_slice(data);
+
+        // CAST: `RpcMessage` has a `u32` representation.
+        io_write!(control, .message_type, message as u32);
+        io_write!(control, .message_seq_num, sequence);
+
+        Ok(())
+    }
+
+    /// Read firmware's response for an expected RPC sequence.
+    pub(super) fn response(&self, expected_sequence: u32) -> Result<RpcResponse> {
+        let response = io_project!(self.view()?, .response.__bindgen_anon_1);
+
+        let sequence = io_read!(response, .message_seq_num_processed);
+        if sequence != expected_sequence {
+            return Ok(RpcResponse::Pending { sequence });
+        }
+
+        Ok(RpcResponse::Complete {
+            status: io_read!(response, .result_code),
+        })
     }
 
     /// Invalidate the PTEs and release the communication mapping.

@@ -13,6 +13,7 @@ use kernel::{
 };
 
 use crate::{
+    driver::Bar0,
     fsp::{
         Fsp,
         VgpuMode, //
@@ -37,6 +38,7 @@ use crate::{
 mod commands;
 mod fw;
 mod gsp_plugin_comm;
+mod gsp_plugin_rpc;
 mod hal;
 mod instance;
 mod vram;
@@ -137,6 +139,7 @@ struct VgpuManagerInner<'gpu> {
     #[pin]
     instances: Mutex<VgpuInstances<'gpu>>,
     dev: &'gpu device::Device<device::Bound>,
+    bar: Bar0<'gpu>,
     cmdq: &'gpu Cmdq<'gpu>,
     bar_user: &'gpu BarUser<'gpu>,
     mm: &'gpu SharedGpuMm<'gpu>,
@@ -149,8 +152,10 @@ struct VgpuManagerInner<'gpu> {
 
 impl<'gpu> VgpuManager<'gpu> {
     /// Retains runtime parameters from a completed vGPU-enabled GSP boot.
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn new(
         dev: &'gpu device::Device<device::Bound>,
+        bar: Bar0<'gpu>,
         cmdq: &'gpu Cmdq<'gpu>,
         bar_user: &'gpu BarUser<'gpu>,
         mm: &'gpu SharedGpuMm<'gpu>,
@@ -164,6 +169,7 @@ impl<'gpu> VgpuManager<'gpu> {
             inner <- pin_init!(VgpuManagerInner {
                 instances <- new_mutex!(VgpuInstances::new(), "nova-core::vgpu-instances"),
                 dev,
+                bar,
                 cmdq,
                 bar_user,
                 mm,

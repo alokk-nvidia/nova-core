@@ -619,6 +619,7 @@ impl<'gpu> Gpu<'gpu> {
                     VgpuState::Enabled { .. } => Some(KBox::pin_init(
                         VgpuManager::new(
                             dev,
+                            bar,
                             &gsp_resources.get_ref().gsp.cmdq,
                             bar_user.get_ref(),
                             mm.get_ref(),

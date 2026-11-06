@@ -10,6 +10,7 @@ use kernel::{
         Mmio, //
     },
     new_mutex,
+    num::casts::FromSafeCast,
     prelude::*,
     sync::Mutex, //
 };
@@ -22,6 +23,7 @@ use crate::{
             MappedRange,
             Vmm, //
         },
+        vram::VramRegion,
         GpuMm,
         Pfn,
         Vfn,
@@ -168,6 +170,104 @@ impl Drop for BarUserAccess<'_, '_> {
         }
         // The inner `MappedRange`'s own `MustUnmapGuard` will also fire,
         // identifying the leaked VA range.
+    }
+}
+
+/// A BAR mapping that retains its backing VRAM region.
+#[must_use]
+pub(crate) struct BarMapping<'map, 'gpu> {
+    /// Mapping of `region`.
+    access: BarUserAccess<'map, 'gpu>,
+    mm: &'map Mutex<GpuMm<'gpu>>,
+    /// The VRAM region that is mapped.
+    region: VramRegion,
+    unmap_error: Option<Error>,
+}
+
+#[expect(dead_code)]
+impl<'map, 'gpu> BarMapping<'map, 'gpu> {
+    /// Maps `region`, which must start and end on a page boundary.
+    pub(crate) fn new(
+        bar_user: &'map BarUser<'gpu>,
+        mm: &'map Mutex<GpuMm<'gpu>>,
+        region: VramRegion,
+        writable: bool,
+    ) -> Result<Self> {
+        const U64_PAGE_SIZE: u64 = cv!(PAGE_SIZE);
+
+        let range = region.range();
+        if !range.start.is_multiple_of(U64_PAGE_SIZE) || !range.end.is_multiple_of(U64_PAGE_SIZE) {
+            return Err(EINVAL);
+        }
+
+        let num_pages = usize::try_from(region.len() / U64_PAGE_SIZE).map_err(|_| EOVERFLOW)?;
+        let mut pfns = KVec::with_capacity(num_pages, GFP_KERNEL)?;
+        for page in 0..num_pages {
+            let address = u64::from_safe_cast(page)
+                .checked_mul(U64_PAGE_SIZE)
+                .and_then(|byte_offset| byte_offset.checked_add(range.start))
+                .ok_or(EOVERFLOW)?;
+            pfns.push(Pfn::from(VramAddress::from_raw(address)), GFP_KERNEL)?;
+        }
+
+        let access = bar_user.map(&mut mm.lock(), &pfns, writable)?;
+
+        Ok(Self {
+            access,
+            mm,
+            region,
+            unmap_error: None,
+        })
+    }
+
+    pub(crate) fn region(&self) -> &VramRegion {
+        &self.region
+    }
+
+    fn access(&self) -> Result<&BarUserAccess<'map, 'gpu>> {
+        if self.access.mapped.is_none() {
+            return Err(ENODEV);
+        }
+        if let Some(error) = self.unmap_error {
+            return Err(error);
+        }
+        Ok(&self.access)
+    }
+
+    /// Returns a typed MMIO view of a `T` located at the start of the mapped region.
+    ///
+    /// Returns an error if the mapping is not live anymore, if a `T` does not fit within the
+    /// region, or if the region is not properly aligned for `T`.
+    pub(crate) fn view<T>(&self) -> Result<Mmio<'_, T>> {
+        // The mapping covers exactly the region, so this also checks that the `T` fits within it.
+        self.access()?.view(0)
+    }
+
+    /// Unmap while retaining the mapping and its backing storage on failure.
+    ///
+    /// The first error is retained; later calls do not retry the operation.
+    pub(crate) fn unmap(&mut self) -> Result {
+        if let Some(error) = self.unmap_error {
+            return Err(error);
+        }
+        let result = self.access.unmap(&mut self.mm.lock());
+        if let Err(error) = result {
+            self.unmap_error = Some(error);
+        }
+        result
+    }
+}
+
+impl Drop for BarMapping<'_, '_> {
+    /// Drop unmaps the region and may sleep. Call [`Self::unmap`] to observe errors;
+    /// on failure the owner must retain this object until device teardown.
+    fn drop(&mut self) {
+        if self.unmap_error.is_some() {
+            return;
+        }
+        if let Err(error) = self.unmap() {
+            kernel::pr_err!("failed to unmap BAR1 region: {:?}\n", error);
+        }
     }
 }
 

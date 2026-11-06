@@ -29,6 +29,7 @@ use logbuffer::LogBuffers;
 pub(crate) use logbuffer::RetainedLogs;
 
 pub(crate) use fw::{
+    GmcCommandId,
     GspFmcBootParams,
     GspFwWprMeta,
     LibosMemoryRegionInitArgument,

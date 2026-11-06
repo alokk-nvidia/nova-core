@@ -4,6 +4,7 @@
 use core::num::NonZero;
 
 use kernel::{
+    bitfield,
     device,
     pci,
     prelude::*, //
@@ -21,9 +22,19 @@ use crate::{
     gsp::commands::FifoEngineList, //
 };
 
+mod commands;
 mod fw;
 mod hal;
 mod vram;
+
+bitfield! {
+    struct Dbdf(u32) {
+        2:0 function;
+        7:3 device;
+        15:8 bus;
+        31:16 domain;
+    }
+}
 
 /// vGPU state detected during GPU construction.
 #[derive(Debug, Clone, Copy)]

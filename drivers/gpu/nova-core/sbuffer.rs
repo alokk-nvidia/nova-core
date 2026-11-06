@@ -161,6 +161,13 @@ where
         Ok(())
     }
 
+    pub(crate) fn read<T: FromBytes + IntoBytes>(&mut self) -> Result<T> {
+        let mut ret = T::new_zeroed();
+        self.read_exact(ret.as_mut_bytes())?;
+
+        Ok(ret)
+    }
+
     /// Read all the remaining data into a [`KVec`].
     ///
     /// `self` will be empty after this operation.

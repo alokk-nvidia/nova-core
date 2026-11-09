@@ -192,6 +192,9 @@ nvkv_encode! {
         pci_config_mirror_base: Key<u32, 0x0010>,
         pci_config_mirror_size: Key<u32, 0x0011>,
         host_arch: Key<HostArch, 0x0070, u32>,
+        default_timeout_us_vgpu: Key<u32, 0x00a0>,
+        default_timeout_us_graphics_mode: Key<u32, 0x00a1>,
+        default_timeout_us_compute_mode: Key<u32, 0x00a2>,
         bus_device_func: Key<u64, 0x1020>,
         regkeys: KVVec<RegKey>,
         vf_info: Option<VfInfo>,
@@ -230,6 +233,11 @@ const REGISTRY_ENTRIES: &[(&[u8], u32)] = &[
 ];
 
 impl GspInitRequest {
+    // GPU timeout defaults in microseconds. All three values must be nonzero in GSP_INIT.
+    const DEFAULT_TIMEOUT_US_VGPU: u32 = 1_800_000;
+    const DEFAULT_TIMEOUT_US_GRAPHICS_MODE: u32 = 4_000_000;
+    const DEFAULT_TIMEOUT_US_COMPUTE_MODE: u32 = 30_000_000;
+
     fn build_vf_info(ctx: &GspBootContext<'_, '_>) -> Result<Option<VfInfo>> {
         let total_vfs = match *ctx.vgpu_state {
             VgpuState::Disabled => return Ok(None),
@@ -300,6 +308,9 @@ impl GspInitRequest {
             pci_config_mirror_base: mirror.start.into(),
             pci_config_mirror_size: (mirror.end - mirror.start).into(),
             host_arch: HostArch::host().into(),
+            default_timeout_us_vgpu: Self::DEFAULT_TIMEOUT_US_VGPU.into(),
+            default_timeout_us_graphics_mode: Self::DEFAULT_TIMEOUT_US_GRAPHICS_MODE.into(),
+            default_timeout_us_compute_mode: Self::DEFAULT_TIMEOUT_US_COMPUTE_MODE.into(),
             bus_device_func: u64::from(bus_device_func).into(),
             regkeys,
             vf_info: Self::build_vf_info(ctx)?,

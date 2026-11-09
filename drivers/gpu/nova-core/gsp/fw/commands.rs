@@ -192,6 +192,9 @@ nvkv_encode! {
         pci_config_mirror_base: Key<u32, 0x0010>,
         pci_config_mirror_size: Key<u32, 0x0011>,
         host_arch: Key<HostArch, 0x0070, u32>,
+        default_timeout_us_vgpu: Key<u32, 0x00a0>,
+        default_timeout_us_graphics_mode: Key<u32, 0x00a1>,
+        default_timeout_us_compute_mode: Key<u32, 0x00a2>,
         bus_device_func: Key<u64, 0x1020>,
         regkeys: KVVec<RegKey>,
         vf_info: Option<VfInfo>,
@@ -230,6 +233,12 @@ const REGISTRY_ENTRIES: &[(&[u8], u32)] = &[
 ];
 
 impl GspInitRequest {
+    // Match Linux host RM's GPU timeout defaults, in microseconds. These are not the host's
+    // RPC response deadlines; r620 requires all three values to be nonzero in GSP_INIT.
+    const DEFAULT_TIMEOUT_US_VGPU: u32 = 1_800_000;
+    const DEFAULT_TIMEOUT_US_GRAPHICS_MODE: u32 = 4_000_000;
+    const DEFAULT_TIMEOUT_US_COMPUTE_MODE: u32 = 30_000_000;
+
     fn build_vf_info(ctx: &GspBootContext<'_, '_>) -> Result<Option<VfInfo>> {
         let total_vfs = match *ctx.vgpu_state {
             VgpuState::Disabled => return Ok(None),
@@ -300,6 +309,9 @@ impl GspInitRequest {
             pci_config_mirror_base: mirror.start.into(),
             pci_config_mirror_size: (mirror.end - mirror.start).into(),
             host_arch: HostArch::host().into(),
+            default_timeout_us_vgpu: Self::DEFAULT_TIMEOUT_US_VGPU.into(),
+            default_timeout_us_graphics_mode: Self::DEFAULT_TIMEOUT_US_GRAPHICS_MODE.into(),
+            default_timeout_us_compute_mode: Self::DEFAULT_TIMEOUT_US_COMPUTE_MODE.into(),
             bus_device_func: u64::from(bus_device_func).into(),
             regkeys,
             vf_info: Self::build_vf_info(ctx)?,
@@ -489,4 +501,40 @@ struct FbRegion {
     limit: u64,
     flags: FbRegionFlags,
     tag: u32,
+}
+
+#[kunit_tests(nova_core_gsp_init)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gsp_init_timeout_defaults() -> Result {
+        let request = GspInitRequest {
+            pci_device_id: 0.into(),
+            pci_sub_device_id: 0.into(),
+            pci_revision_id: 0.into(),
+            pci_config_mirror_base: 0.into(),
+            pci_config_mirror_size: 0.into(),
+            host_arch: HostArch::X86_64.into(),
+            default_timeout_us_vgpu: GspInitRequest::DEFAULT_TIMEOUT_US_VGPU.into(),
+            default_timeout_us_graphics_mode: GspInitRequest::DEFAULT_TIMEOUT_US_GRAPHICS_MODE
+                .into(),
+            default_timeout_us_compute_mode: GspInitRequest::DEFAULT_TIMEOUT_US_COMPUTE_MODE.into(),
+            bus_device_func: 0.into(),
+            regkeys: KVVec::new(),
+            vf_info: None,
+        };
+
+        let mut encoder = Encoder::new();
+        request.encode(&mut encoder)?;
+        let encoded = encoder.finish();
+
+        // Each timeout is an IMM32 at index zero, with a microsecond value in the upper 32 bits.
+        assert_eq!(encoded.len(), 11);
+        assert_eq!(encoded[6], (1_800_000u64 << 32) | 0x00a0);
+        assert_eq!(encoded[7], (4_000_000u64 << 32) | 0x00a1);
+        assert_eq!(encoded[8], (30_000_000u64 << 32) | 0x00a2);
+
+        Ok(())
+    }
 }

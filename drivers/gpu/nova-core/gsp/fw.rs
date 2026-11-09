@@ -124,11 +124,7 @@ impl GspFwHeapParams {
             .align_up(GSP_HEAP_ALIGNMENT)
             .ok_or(EINVAL)?;
 
-        Ok(self
-            .tlv_gsp_fw_heap_base_size_vgpu
-            .saturating_add(vm_size)
-            // Clamp to the supported heap sizes.
-            .clamp(self.allowed_heap_size.start, self.allowed_heap_size.end - 1))
+        Ok(self.tlv_gsp_fw_heap_base_size_vgpu.saturating_add(vm_size))
     }
 
     /// Returns the amount of memory (in bytes) to allocate for the WPR heap for a framebuffer size

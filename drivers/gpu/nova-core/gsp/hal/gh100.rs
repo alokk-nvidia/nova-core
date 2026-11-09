@@ -153,6 +153,14 @@ impl GspHal for Gh100 {
 
         let fb_sizes = FbSizes::new(ctx, gsp_fw)?;
         dev_dbg!(dev, "{:#x?}\n", fb_sizes);
+        dev_info!(
+            dev,
+            "GSP boot memory: vgpu_state={:?} wpr2_heap_size={:#x} non_wpr_heap_size={:#x} pmu_reserved_size={:#x}\n",
+            ctx.vgpu_state,
+            fb_sizes.wpr2_heap_size,
+            fb_sizes.non_wpr_heap_size,
+            fb_sizes.pmu_reserved_size,
+        );
 
         let wpr_meta =
             Coherent::init(dev, GFP_KERNEL, GspFwWprMeta::from_sizes(gsp_fw, &fb_sizes))?;

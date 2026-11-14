@@ -720,6 +720,20 @@ bounded_enum! {
         ExecGenericBootloader = bindings::GMCAPI_COMMANDS_GMCAPI_CMD_EXEC_GENERIC_BOOTLOADER,
         ExecHsBinary = bindings::GMCAPI_COMMANDS_GMCAPI_CMD_EXEC_HS_BINARY,
         GspSuspend = bindings::GMCAPI_COMMANDS_GMCAPI_CMD_GSP_SUSPEND,
+        QueryVgpuProperties = bindings::GMCAPI_COMMANDS_GMCAPI_CMD_QUERY_VGPU_PROPERTIES,
+        QueryAssignedVfVgpuType = bindings::GMCAPI_COMMANDS_GMCAPI_CMD_QUERY_ASSIGNED_VF_VGPU_TYPE,
+        BootloadGspVgpuPluginTask =
+            bindings::GMCAPI_COMMANDS_GMCAPI_CMD_BOOTLOAD_GSP_VGPU_PLUGIN_TASK,
+        ShutdownGspVgpuPluginTask =
+            bindings::GMCAPI_COMMANDS_GMCAPI_CMD_SHUTDOWN_GSP_VGPU_PLUGIN_TASK,
+        ShutdownGspVgpuPluginTaskComplete =
+            bindings::GMCAPI_COMMANDS_GMCAPI_CMD_SHUTDOWN_GSP_VGPU_PLUGIN_TASK_COMPLETE,
+        CleanupGspVgpuPluginResources =
+            bindings::GMCAPI_COMMANDS_GMCAPI_CMD_CLEANUP_GSP_VGPU_PLUGIN_RESOURCES,
+        VgpuPluginTriggeredEvent = bindings::GMCAPI_COMMANDS_GMCAPI_CMD_VGPU_PLUGIN_TRIGGERED_EVENT,
+        VgpuMgrScrubGuestFb = bindings::GMCAPI_COMMANDS_GMCAPI_CMD_VGPU_MGR_SCRUB_GUEST_FB,
+        VgpuMgrAllocGspCeutils = bindings::GMCAPI_COMMANDS_GMCAPI_CMD_VGPU_MGR_ALLOC_GSP_CEUTILS,
+        VgpuMgrFreeGspCeutils = bindings::GMCAPI_COMMANDS_GMCAPI_CMD_VGPU_MGR_FREE_GSP_CEUTILS,
         MmuFaultQueued = bindings::GMCAPI_COMMANDS_GMCAPI_CMD_MMU_FAULT_QUEUED,
     }
 }

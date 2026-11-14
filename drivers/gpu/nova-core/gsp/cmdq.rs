@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
-pub(super) mod gmc;
+pub(crate) mod gmc;
 // No caller sends an RPC command: GSP_INIT and GSP_SUSPEND replaced the RPC commands that the
 // driver used during boot and shutdown. The r000 GSP-RM still accepts RPC commands once it is up,
 // so the RPC send and reply paths stay, and are built as dead code.

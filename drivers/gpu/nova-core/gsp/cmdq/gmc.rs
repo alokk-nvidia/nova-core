@@ -349,6 +349,50 @@ impl Cmdq<'_> {
         })
     }
 
+    /// Sends `command`, which the GSP does not answer, and waits for the event that completes it.
+    ///
+    /// GMC events are passed to `on_event` until it returns `Ok(Some(_))`, which ends the wait.
+    /// Other messages are logged and consumed.
+    ///
+    /// The queue is locked for the entire send+receive cycle, including the calls to `on_event`,
+    /// so that no other receiver can consume the event. `on_event` must thus not use the queue.
+    ///
+    /// # Errors
+    ///
+    /// - `EMSGSIZE` if the command does not fit in a single command queue element.
+    /// - `ETIMEDOUT` if space does not become available to send the command, or if `on_event`
+    ///   accepts no event within [`CommandToGsp::COMPLETION_TIMEOUT`] of the send.
+    /// - `EIO` if the variable payload requested by the command has not been entirely
+    ///   written to by its [`CommandToGsp::init_variable_payload`] method, or if a message fails
+    ///   framing validation.
+    ///
+    /// Error codes returned by the command initializer and by `on_event` are propagated as-is.
+    #[expect(dead_code)]
+    pub(crate) fn send_gmc_command_await_event<C, R>(
+        &self,
+        command: C,
+        on_event: impl Fn(&GmcMessage<'_>) -> Result<Option<R>>,
+    ) -> Result<R>
+    where
+        C: CommandToGsp<Reply = NoReply>,
+        Error: From<C::InitError>,
+    {
+        self.with_inner_locked(|inner| {
+            inner.send_gmc_command(command)?;
+            let dev = inner.dev;
+
+            inner.await_msg_with(C::COMPLETION_TIMEOUT, |message| match message {
+                GspParsedMessage::Gmc(event) if !event.header.command().is_response() => {
+                    on_event(&event)
+                }
+                _ => {
+                    message.log(dev);
+                    Ok(None)
+                }
+            })
+        })
+    }
+
     /// Sends `command` to the GSP without waiting for a reply.
     ///
     /// # Errors

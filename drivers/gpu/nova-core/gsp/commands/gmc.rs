@@ -9,6 +9,7 @@ use kernel::{
     device,
     pci,
     prelude::*,
+    time::Delta,
     transmute::AsBytes, //
 };
 
@@ -80,6 +81,8 @@ impl CommandToGsp for GspInit {
     const COMMAND: GmcCommandId = GmcCommandId::GspInit;
     /// Largest reply that the driver accepts, in bytes.
     const MAX_REPLY_SIZE: u32 = 48 * 1024;
+    /// `GspInit` can take longer than 5 seconds to complete on some SKUs.
+    const COMPLETION_TIMEOUT: Delta = Delta::from_secs(15);
     type Command = ();
     type Reply = GspStaticInfo;
     type InitError = Infallible;

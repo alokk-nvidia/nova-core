@@ -42,7 +42,6 @@ mod gsp_plugin_rpc;
 mod hal;
 mod instance;
 mod scrubber;
-#[cfg_attr(not(CONFIG_PCI_IOV), expect(dead_code, unreachable_pub))]
 pub(crate) mod vgpu_api;
 mod vram;
 

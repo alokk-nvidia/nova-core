@@ -29,7 +29,8 @@ use crate::{
         NovaCoreFwCtl,
         NovaCoreFwCtlData, //
     },
-    gpu::Gpu, //
+    gpu::Gpu,
+    vgpu::vgpu_api::NovaCoreVfApi, //
 };
 
 /// Counter for generating unique auxiliary device IDs.
@@ -43,6 +44,10 @@ pub(crate) struct NovaCore<'bound> {
     /// Unregisters fwctl and drains its callbacks before GPU resources are dropped.
     #[uses('gpu: invariant)]
     _fwctl: fwctl::Registration<'gpu, NovaCoreFwCtl>,
+    #[allow(clippy::type_complexity)]
+    #[pin]
+    #[uses('gpu: invariant)]
+    _vf_registration: pci::VfRegistration<'gpu, ForLt!(NovaCoreVfApi<'_>)>,
     #[pin]
     #[uses('bar1)]
     pub(crate) gpu: Gpu<'bar>,
@@ -115,6 +120,10 @@ impl pci::Driver for NovaCoreDriver {
 
         try_pin_init!(NovaCore {
             _: {
+                if pdev.is_virtfn() {
+                    return Err(ENODEV);
+                }
+
                 pdev.enable_device_mem()?;
                 pdev.set_master();
             },
@@ -146,6 +155,12 @@ impl pci::Driver for NovaCoreDriver {
                 Ok(())
             }),
 
+            // SAFETY: The registration is stored in `NovaCore`, this driver's bus device
+            // private data.
+            _vf_registration <- unsafe {
+                pci::VfRegistration::new(pdev, NovaCoreVfApi::new(pdev, gpu))
+            },
+
             // SAFETY: `NovaCore` is dropped when the device is unbound; i.e. `mem::forget()` is
             // never called on it.
             _reg: unsafe {
@@ -176,5 +191,22 @@ impl pci::Driver for NovaCoreDriver {
                 }
             },
         })
+    }
+
+    fn sriov_enable<'a>(
+        _dev: &'a pci::Device<Core<'_>>,
+        _this: Pin<&Self::Data<'a>>,
+        token: pci::SriovEnable<'a>,
+    ) -> Result<pci::SriovEnabled<'a>> {
+        token.enable_all()
+    }
+
+    fn sriov_disable<'a>(
+        _dev: &'a pci::Device<Core<'_>>,
+        _this: Pin<&Self::Data<'a>>,
+        token: pci::SriovDisable<'a>,
+    ) -> Result {
+        token.disable();
+        Ok(())
     }
 }

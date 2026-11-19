@@ -35,9 +35,10 @@ mod vgpu;
 
 use debugfs::DebugfsData;
 
-#[cfg(CONFIG_PCI_IOV)]
 pub use vgpu::vgpu_api::{
     NovaCoreVfApi,
+    NovaCoreVfApiHandle,
+    VgpuInstance,
     VgpuTypeInfo, //
 };
 

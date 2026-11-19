@@ -429,6 +429,18 @@ pub enum ErsResult {
 }
 
 impl ErsResult {
+    #[cfg_attr(not(CONFIG_VFIO_PCI_CORE), expect(dead_code))]
+    pub(crate) fn from_raw(result: bindings::pci_ers_result_t) -> Option<Self> {
+        match result {
+            bindings::pci_ers_result_PCI_ERS_RESULT_NONE => Some(Self::None),
+            bindings::pci_ers_result_PCI_ERS_RESULT_CAN_RECOVER => Some(Self::CanRecover),
+            bindings::pci_ers_result_PCI_ERS_RESULT_NEED_RESET => Some(Self::NeedReset),
+            bindings::pci_ers_result_PCI_ERS_RESULT_DISCONNECT => Some(Self::Disconnect),
+            bindings::pci_ers_result_PCI_ERS_RESULT_RECOVERED => Some(Self::Recovered),
+            _ => None,
+        }
+    }
+
     fn as_raw(self) -> bindings::pci_ers_result_t {
         match self {
             Self::None => bindings::pci_ers_result_PCI_ERS_RESULT_NONE,

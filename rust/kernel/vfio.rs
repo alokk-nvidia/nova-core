@@ -3,7 +3,7 @@
 //! Virtual Function I/O (VFIO) devices and callback data.
 //!
 //! [`DeviceBase`] combines a C VFIO device structure with the data its callbacks use.
-//! [`Device`] is an alias of it for `struct vfio_device`.
+//! [`Device`] and the bus-specific devices, such as `pci::Device`, are aliases of it.
 //!
 //! C header: [`include/linux/vfio.h`](srctree/include/linux/vfio.h)
 
@@ -25,6 +25,9 @@ use core::{
     marker::PhantomData,
     ptr::NonNull, //
 };
+
+#[cfg(CONFIG_VFIO_PCI_CORE)]
+pub mod pci;
 
 /// Reset the VFIO device.
 pub const DEVICE_RESET: u32 = bindings::VFIO_DEVICE_RESET;
@@ -89,7 +92,7 @@ impl IoContext for GetRegionInfo {}
 
 /// The data the driver of a [`Device`] shares with its callbacks.
 ///
-/// Bus-specific devices take the data types from their own trait.
+/// Bus-specific devices take the data types from their own trait, such as `pci::Operations`.
 pub trait Operations: Sized + Send + Sync + 'static {
     /// Data owned by the registration and passed to VFIO callbacks.
     ///
@@ -148,8 +151,8 @@ struct CallbackData<R, O> {
 /// beginning of `Self`, as `vfio_alloc_device()` requires.
 ///
 /// `R` and `O` are the types of the registration data and the open data of `T`, written with
-/// the placeholder lifetime `'static`. Use the alias [`Device`], which takes both from the
-/// operations trait of `T`.
+/// the placeholder lifetime `'static`. Use the aliases [`Device`] and `pci::Device`, which
+/// take both from the operations trait of `T`.
 ///
 /// # Invariants
 ///
@@ -176,7 +179,7 @@ pub type Device<T, Ctx = Normal> = DeviceBase<
     Ctx,
 >;
 
-#[expect(dead_code)]
+#[cfg_attr(not(CONFIG_VFIO_PCI_CORE), expect(dead_code))]
 impl<Raw: RawDevice, R, O, T, Ctx: DeviceContext> DeviceBase<Raw, R, O, T, Ctx> {
     /// Initializes the Rust fields of a newly allocated device.
     ///
@@ -217,7 +220,7 @@ impl<Raw: RawDevice, R, O, T, Ctx: DeviceContext> DeviceBase<Raw, R, O, T, Ctx> 
     }
 }
 
-#[expect(dead_code)]
+#[cfg_attr(not(CONFIG_VFIO_PCI_CORE), expect(dead_code))]
 impl<Raw: RawDevice, R, O, T> DeviceBase<Raw, R, O, T> {
     /// Publishes the registration data passed to callbacks.
     ///
@@ -258,7 +261,7 @@ impl<Raw: RawDevice, R, O, T> DeviceBase<Raw, R, O, T> {
     }
 }
 
-#[expect(dead_code)]
+#[cfg_attr(not(CONFIG_VFIO_PCI_CORE), expect(dead_code))]
 impl<Raw: RawDevice, R, O, T> DeviceBase<Raw, R, O, T, Open> {
     /// Creates the open data from the registration data.
     ///
@@ -301,7 +304,7 @@ impl<Raw: RawDevice, R, O, T> DeviceBase<Raw, R, O, T, Open> {
     }
 }
 
-#[expect(dead_code)]
+#[cfg_attr(not(CONFIG_VFIO_PCI_CORE), expect(dead_code))]
 impl<Raw: RawDevice, R, O, T, Ctx: IoContext> DeviceBase<Raw, R, O, T, Ctx> {
     /// Returns the registration data and the open data, for an I/O callback.
     ///
@@ -352,7 +355,7 @@ unsafe impl<Raw: RawDevice, R: Send + Sync, O: Send + Sync, T> Sync for DeviceBa
 
 /// Capability buffer supplied by VFIO for a region-info callback.
 pub struct InfoCap<'a> {
-    #[expect(dead_code)]
+    #[cfg_attr(not(CONFIG_VFIO_PCI_CORE), expect(dead_code))]
     raw: &'a mut bindings::vfio_info_cap,
 }
 

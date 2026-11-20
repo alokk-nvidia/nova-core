@@ -37,6 +37,18 @@ use crate::{
     sbuffer::SBufferIter, //
 };
 
+/// Payload of a GMC command.
+///
+/// Since the command queue is circular, the payload may loop onto the start of the queue. Hence it
+/// is presented as a [`SBufferIter`] of potentially two elements.
+pub(crate) type CommandPayload<'a> = SBufferIter<core::array::IntoIter<&'a mut [u8], 2>>;
+
+/// Payload of a GMC message.
+///
+/// Since the message queue is circular, the payload may loop onto the start of the queue. Hence it
+/// is presented as a [`SBufferIter`] of potentially two elements.
+pub(crate) type MessagePayload<'a> = SBufferIter<core::array::IntoIter<&'a [u8], 2>>;
+
 /// Trait implemented by types representing a GMC command to send to the GSP.
 ///
 /// The main purpose of this trait is to provide [`Cmdq`] with the information it needs to send
@@ -94,10 +106,7 @@ pub(crate) trait CommandToGsp {
     /// unwritten space will lead to an error.
     ///
     /// Most commands don't have a variable-length payload, so this does nothing by default.
-    fn init_variable_payload(
-        &self,
-        _dst: &mut SBufferIter<core::array::IntoIter<&mut [u8], 2>>,
-    ) -> Result {
+    fn init_variable_payload(&self, _dst: &mut CommandPayload<'_>) -> Result {
         Ok(())
     }
 
@@ -178,18 +187,14 @@ pub(crate) trait MessageFromGsp: Sized {
     type InitError;
 
     /// Method reading the reply from the payload of the message and returning it.
-    fn read(
-        payload: &mut SBufferIter<core::array::IntoIter<&[u8], 2>>,
-    ) -> Result<Self, Self::InitError>;
+    fn read(payload: &mut MessagePayload<'_>) -> Result<Self, Self::InitError>;
 }
 
 /// Reply type for commands that the GSP answers with a status and no payload.
 impl MessageFromGsp for () {
     type InitError = Infallible;
 
-    fn read(
-        _payload: &mut SBufferIter<core::array::IntoIter<&[u8], 2>>,
-    ) -> Result<Self, Self::InitError> {
+    fn read(_payload: &mut MessagePayload<'_>) -> Result<Self, Self::InitError> {
         Ok(())
     }
 }

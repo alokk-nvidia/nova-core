@@ -12,8 +12,6 @@
 //!   memory (DMEM) of a falcon, and the DMA engine that loads a binary into them. The DMA engine
 //!   accesses the framebuffer or system memory through the FBIF (Framebuffer Interface).
 
-use core::array;
-
 use kernel::{
     device,
     dma::DmaAddress,
@@ -40,7 +38,8 @@ use crate::{
     gsp::{
         cmdq::gmc::{
             GmcMessage,
-            MessageFromGsp, //
+            MessageFromGsp,
+            MessagePayload, //
         },
         fw::GmcCommandId,
         GspBootContext, //
@@ -426,7 +425,7 @@ unsafe impl FromBytes for HsBinaryParams {}
 impl MessageFromGsp for HsBinaryParams {
     type InitError = Error;
 
-    fn read(payload: &mut SBufferIter<array::IntoIter<&[u8], 2>>) -> Result<Self> {
+    fn read(payload: &mut MessagePayload<'_>) -> Result<Self> {
         let mut bytes = [0u8; size_of::<Self>()];
 
         payload.read_exact(&mut bytes)?;
@@ -482,7 +481,7 @@ unsafe impl FromBytes for GenericBootloaderParams {}
 impl MessageFromGsp for GenericBootloaderParams {
     type InitError = Error;
 
-    fn read(payload: &mut SBufferIter<array::IntoIter<&[u8], 2>>) -> Result<Self> {
+    fn read(payload: &mut MessagePayload<'_>) -> Result<Self> {
         let mut bytes = [0u8; size_of::<Self>()];
 
         payload.read_exact(&mut bytes)?;

@@ -11,34 +11,33 @@ use kernel::{
     transmute::AsBytes, //
 };
 
-use crate::{
-    gsp::{
-        cmdq::{
-            gmc::{
-                CommandToGsp,
-                MessageFromGsp, //
-            },
-            NoReply, //
+use crate::gsp::{
+    cmdq::{
+        gmc::{
+            CommandPayload,
+            CommandToGsp,
+            MessageFromGsp,
+            MessagePayload, //
         },
-        commands::GspStaticInfo,
-        fw::{
-            self,
-            commands::{
-                GspInitRequest,
-                GspInitResponseSchema, //
-            },
-            GmcCommandId, //
-        },
-        nvkv::{
-            Decoder,
-            Encodable,
-            Encoder,
-            Schema,
-            UnknownKeyPolicy, //
-        },
-        GspBootContext, //
+        NoReply,
     },
-    sbuffer::SBufferIter, //
+    commands::GspStaticInfo,
+    fw::{
+        self,
+        commands::{
+            GspInitRequest,
+            GspInitResponseSchema, //
+        },
+        GmcCommandId,
+    },
+    nvkv::{
+        Decoder,
+        Encodable,
+        Encoder,
+        Schema,
+        UnknownKeyPolicy, //
+    },
+    GspBootContext,
 };
 
 /// The `GSP_INIT` command, which carries the system information and registry keys to GSP-RM.
@@ -88,10 +87,7 @@ impl CommandToGsp for GspInit {
         self.payload_bytes().len()
     }
 
-    fn init_variable_payload(
-        &self,
-        dst: &mut SBufferIter<core::array::IntoIter<&mut [u8], 2>>,
-    ) -> Result {
+    fn init_variable_payload(&self, dst: &mut CommandPayload<'_>) -> Result {
         dst.write_all(self.payload_bytes())
     }
 }
@@ -147,7 +143,7 @@ impl MessageFromGsp for GspStaticInfo {
     ///   or omits a required key, if GSP-RM reported no framebuffer region, or if the FIFO engine
     ///   count or indexed entries exceed the supported table capacity.
     /// - `ENOMEM` if the words or the decoded regions cannot be allocated.
-    fn read(payload: &mut SBufferIter<core::array::IntoIter<&[u8], 2>>) -> Result<Self> {
+    fn read(payload: &mut MessagePayload<'_>) -> Result<Self> {
         let bytes = payload.flush_into_kvec(GFP_KERNEL)?;
 
         let chunks = bytes.chunks_exact(size_of::<u64>());

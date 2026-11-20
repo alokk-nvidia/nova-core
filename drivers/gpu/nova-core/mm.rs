@@ -44,13 +44,15 @@ use kernel::{
         GpuBuddy,
         GpuBuddyParams, //
     },
+    new_mutex,
     num::Bounded,
     prelude::*,
     ptr::{
         Alignable,
         Alignment, //
     },
-    sizes::SZ_4K, //
+    sizes::SZ_4K,
+    sync::Mutex, //
 };
 
 use crate::{
@@ -114,6 +116,33 @@ impl<'gpu> GpuMm<'gpu> {
     /// Access the [`Tlb`] manager.
     pub(crate) fn tlb(&self) -> &Tlb<'gpu> {
         self.tlb.as_ref().get_ref()
+    }
+}
+
+/// A [`GpuMm`] shared between several users, serialized by a mutex.
+#[pin_data]
+pub(crate) struct SharedGpuMm<'gpu>
+where
+    // Hide the mutex's invariant resource lifetime so `SharedGpuMm` remains covariant.
+    exists<'res>: 'gpu,
+{
+    #[pin]
+    #[uses('res: invariant)]
+    inner: Mutex<GpuMm<'res>>,
+}
+
+impl<'gpu> SharedGpuMm<'gpu> {
+    /// Creates a pin-initializer sharing `mm`.
+    #[expect(dead_code)]
+    pub(crate) fn new(mm: GpuMm<'gpu>) -> impl PinInit<Self> + 'gpu {
+        pin_init!(Self {
+            inner <- new_mutex!(mm, "nova-core::gpu-mm"),
+        })
+    }
+
+    /// Runs `f` with the memory manager locked.
+    pub(crate) fn with_locked<R>(&self, f: impl FnOnce(&mut GpuMm<'_>) -> R) -> R {
+        self.with_inner(|inner| f(&mut inner.lock()))
     }
 }
 

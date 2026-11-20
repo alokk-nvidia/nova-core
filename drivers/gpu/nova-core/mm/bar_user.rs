@@ -26,6 +26,7 @@ use crate::{
         vram::VramRegion,
         GpuMm,
         Pfn,
+        SharedGpuMm,
         Vfn,
         VirtualAddress,
         VramAddress,
@@ -178,7 +179,7 @@ impl Drop for BarUserAccess<'_, '_> {
 pub(crate) struct BarMapping<'map, 'gpu> {
     /// Mapping of `region`.
     access: BarUserAccess<'map, 'gpu>,
-    mm: &'map Mutex<GpuMm<'gpu>>,
+    mm: &'map SharedGpuMm<'gpu>,
     /// The VRAM region that is mapped.
     region: VramRegion,
     unmap_error: Option<Error>,
@@ -189,7 +190,7 @@ impl<'map, 'gpu> BarMapping<'map, 'gpu> {
     /// Maps `region`, which must start and end on a page boundary.
     pub(crate) fn new(
         bar_user: &'map BarUser<'gpu>,
-        mm: &'map Mutex<GpuMm<'gpu>>,
+        mm: &'map SharedGpuMm<'gpu>,
         region: VramRegion,
         writable: bool,
     ) -> Result<Self> {
@@ -210,7 +211,7 @@ impl<'map, 'gpu> BarMapping<'map, 'gpu> {
             pfns.push(Pfn::from(VramAddress::from_raw(address)), GFP_KERNEL)?;
         }
 
-        let access = bar_user.map(&mut mm.lock(), &pfns, writable)?;
+        let access = mm.with_locked(|mm| bar_user.map(mm, &pfns, writable))?;
 
         Ok(Self {
             access,
@@ -250,7 +251,7 @@ impl<'map, 'gpu> BarMapping<'map, 'gpu> {
         if let Some(error) = self.unmap_error {
             return Err(error);
         }
-        let result = self.access.unmap(&mut self.mm.lock());
+        let result = self.mm.with_locked(|mm| self.access.unmap(mm));
         if let Err(error) = result {
             self.unmap_error = Some(error);
         }

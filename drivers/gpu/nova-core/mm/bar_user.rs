@@ -4,7 +4,11 @@
 //! for GPU work submission, and applications to access GPU buffers via mmap().
 
 use kernel::{
-    io::Io,
+    io::{
+        io_project,
+        register::OffsetLoc,
+        Mmio, //
+    },
     new_mutex,
     prelude::*,
     sync::Mutex, //
@@ -125,41 +129,28 @@ impl BarUserAccess<'_> {
         self.mapped().num_pages
     }
 
-    /// Translate an offset within this mapping to a BAR1 aperture offset.
-    fn bar_offset(&self, offset: usize) -> Result<usize> {
-        if offset >= self.size() {
+    /// Returns a typed MMIO view of a `T` located at `offset` within this mapping.
+    ///
+    /// Returns an error if the mapping has been torn down, if a `T` at `offset` does not fit
+    /// within the mapping, or if `offset` is not properly aligned for `T`.
+    pub(crate) fn view<T>(&self, offset: usize) -> Result<Mmio<'_, T>> {
+        let mapped = self.mapped.as_ref().ok_or(ENODEV)?;
+
+        // The I/O layer only knows about the bounds of BAR1, not the ones of this mapping.
+        let end = offset.checked_add(size_of::<T>()).ok_or(EOVERFLOW)?;
+        if end > mapped.num_pages * PAGE_SIZE {
             return Err(EINVAL);
         }
 
-        let base_vfn: usize = self.mapped().vfn_start.raw().into_safe_cast();
-        let base = base_vfn.checked_mul(PAGE_SIZE).ok_or(EOVERFLOW)?;
-        base.checked_add(offset).ok_or(EOVERFLOW)
-    }
+        // Offset of the `T` within BAR1.
+        let base_vfn: usize = mapped.vfn_start.raw().into_safe_cast();
+        let bar_offset = base_vfn
+            .checked_mul(PAGE_SIZE)
+            .and_then(|base| base.checked_add(offset))
+            .ok_or(EOVERFLOW)?;
 
-    // Fallible accessors with runtime bounds checking.
-
-    /// Read a 32-bit value at the given offset.
-    pub(crate) fn try_read32(&self, offset: usize) -> Result<u32> {
-        let off = self.bar_offset(offset)?;
-        self.bar_user.bar1.try_read32(off)
-    }
-
-    /// Write a 32-bit value at the given offset.
-    pub(crate) fn try_write32(&self, value: u32, offset: usize) -> Result {
-        let off = self.bar_offset(offset)?;
-        self.bar_user.bar1.try_write32(value, off)
-    }
-
-    /// Read a 64-bit value at the given offset.
-    pub(crate) fn try_read64(&self, offset: usize) -> Result<u64> {
-        let off = self.bar_offset(offset)?;
-        self.bar_user.bar1.try_read64(off)
-    }
-
-    /// Write a 64-bit value at the given offset.
-    pub(crate) fn try_write64(&self, value: u64, offset: usize) -> Result {
-        let off = self.bar_offset(offset)?;
-        self.bar_user.bar1.try_write64(value, off)
+        // This also checks that the `T` is within BAR1 and properly aligned.
+        Ok(io_project!(self.bar_user.bar1, try: OffsetLoc::new(bar_offset)))
     }
 }
 
@@ -193,6 +184,7 @@ pub(crate) fn run_self_test(
             GpuBuddyAllocFlags,
             GpuBuddyAllocMode, //
         },
+        io::Io,
         ptr::Alignment,
         sizes::{
             SizeConstants,
@@ -397,7 +389,7 @@ pub(crate) fn run_self_test(
         .view()
         .write_val(PATTERN_BAR1);
 
-    let readback = access.try_read32(0)?;
+    let readback = access.view::<u32>(0)?.read_val();
     let test4_passed = if readback == PATTERN_BAR1 {
         true
     } else {

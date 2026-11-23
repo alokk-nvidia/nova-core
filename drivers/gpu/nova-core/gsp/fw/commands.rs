@@ -335,7 +335,6 @@ pub(crate) struct FifoEngineList {
 }
 
 impl FifoEngineList {
-    #[expect(dead_code)]
     pub(crate) fn gmc_ids(&self) -> &[u32] {
         // PANIC: The type invariant bounds `count` by the array capacity.
         &self.gmc_ids[..self.count]

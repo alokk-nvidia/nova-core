@@ -7,19 +7,37 @@ use core::num::{
 };
 
 use kernel::{
+    device,
     prelude::*,
     ptr::Alignment,
-    sizes::SizeConstants, //
+    sizes::SizeConstants,
+    time::{
+        delay::fsleep,
+        Delta,
+        Instant,
+        Monotonic, //
+    }, //
 };
 
 use crate::{
     gpu::ChannelIdReservation,
+    gsp::{
+        cmdq::Cmdq,
+        commands::FifoEngineList, //
+    },
     mm::GpuMm, //
     num::FromSafeCast,
 };
 
 use super::{
-    fw::commands::VgpuProperties,
+    commands::send_bootload,
+    fw::commands::{
+        encode_vgpu_bootload,
+        BootloadInfo,
+        ChannelMapEntry,
+        VgpuProperties, //
+    },
+    gsp_plugin_comm::CommBufferRegion,
     vram::{
         VgpuVramLayout,
         VgpuVramSlot,
@@ -28,6 +46,49 @@ use super::{
     Dbdf,
     VgpuManagerInner, //
 };
+
+/// Ready limit used by `vmiopd_negotiate_cpu_gsp_version()` for the same marker.
+const PLUGIN_READY_TIMEOUT: Delta = Delta::from_secs(10);
+
+/// Per-engine channel budget reserved by the full SR-IOV plugin.
+///
+/// The supported GB20x path keeps firmware's non-heavy default, which uses
+/// `PLUGIN_ALLOCATED_CHANNELS_PER_ENGINE` rather than the heavy-mode budget.
+const PLUGIN_CHANNELS_PER_ENGINE: u32 = 3;
+
+/// Build the typed channel mapping from the GSP FIFO engine list.
+fn channel_mapping(
+    fifo_engine_list: &FifoEngineList,
+    chid_offset: u32,
+) -> Result<KVVec<ChannelMapEntry>> {
+    let mut mapping = KVVec::new();
+    for &gmc_id in fifo_engine_list.gmc_ids() {
+        // CAST: The mask leaves only the low 16 bits of the GMC engine ID.
+        let engine_type = (gmc_id & u32::from(u16::MAX)) as u16;
+        // CAST: Shifting a `u32` by 16 leaves at most 16 bits.
+        let index = (gmc_id >> u16::BITS) as u16;
+        mapping.push(
+            ChannelMapEntry::new(engine_type, index, chid_offset),
+            GFP_KERNEL,
+        )?;
+    }
+    Ok(mapping)
+}
+
+fn wait_plugin_ready(dev: &device::Device, comm: &CommBufferRegion<'_, '_>) -> Result {
+    let start = Instant::<Monotonic>::now();
+
+    loop {
+        if comm.is_plugin_ready()? {
+            dev_dbg!(dev, "vGPU plugin ready after {:?}\n", start.elapsed());
+            return Ok(());
+        }
+        if start.elapsed() >= PLUGIN_READY_TIMEOUT {
+            return Err(ETIMEDOUT);
+        }
+        fsleep(Delta::from_millis(1));
+    }
+}
 
 /// Guest Function ID validated against one device's total number of VFs.
 ///
@@ -51,7 +112,6 @@ impl Gfid {
         }
     }
 
-    #[expect(dead_code)]
     pub(super) const fn get(self) -> u16 {
         self.0.get()
     }
@@ -77,14 +137,72 @@ impl From<&VgpuProperties> for VgpuType {
 }
 
 /// A vGPU instance and the resources reserved for it.
-#[expect(dead_code)]
 struct VgpuInstance<'gpu> {
     gfid: Gfid,
     dbdf: Dbdf,
     vgpu_type: VgpuType,
     vm_pid: u32,
-    chids: ChannelIdReservation<'gpu>,
+    num_plugin_channels: u32,
+    comm: CommBufferRegion<'gpu, 'gpu>,
+    // Unmap the communication region before returning its slot and channel IDs.
     vram_slot: VgpuVramSlot,
+    chids: ChannelIdReservation<'gpu>,
+}
+
+impl<'gpu> VgpuInstance<'gpu> {
+    #[expect(dead_code)]
+    fn activate(&mut self, vgpu: &VgpuManagerInner<'gpu>) -> Result {
+        let dev = vgpu.dev;
+        self.bootload(dev, vgpu.cmdq, &vgpu.fifo_engine_list)?;
+
+        Ok(())
+    }
+
+    /// Bootload the GSP vGPU plugin and wait for its BAR1 ready indication.
+    fn bootload(
+        &mut self,
+        dev: &device::Device,
+        cmdq: &Cmdq<'_>,
+        fifo_engine_list: &FifoEngineList,
+    ) -> Result {
+        let fb = &self.vram_slot.fbmem;
+        let mgmt = &self.vram_slot.mgmt_heap;
+        let logs = self.comm.plugin_logs()?;
+
+        let payload = encode_vgpu_bootload(BootloadInfo {
+            dbdf: self.dbdf,
+            gfid: u32::from(self.gfid.get()),
+            vgpu_type: self.vgpu_type.vgpu_type_id,
+            vm_pid: self.vm_pid,
+            num_channels: u32::try_from(self.chids.len()).map_err(|_| EOVERFLOW)?,
+            num_plugin_channels: self.num_plugin_channels,
+            channel_mapping: channel_mapping(
+                fifo_engine_list,
+                u32::try_from(self.chids.start).map_err(|_| EOVERFLOW)?,
+            )?,
+            guest_fb: fb,
+            plugin_heap: mgmt,
+            ctrl_buffer_offset: 0,
+            init_log: &logs.init,
+            vgpu_log: &logs.vgpu,
+            kernel_log: &logs.kernel,
+        })?;
+
+        dev_dbg!(
+            dev,
+            "bootload: gfid={} sending {} typed NVKV bytes\n",
+            self.gfid.get(),
+            payload.len() * size_of::<u64>(),
+        );
+
+        self.comm.clear_plugin_ready()?;
+        send_bootload(dev, cmdq, &payload)?;
+
+        wait_plugin_ready(dev, &self.comm)?;
+
+        dev_dbg!(dev, "bootload: gfid={} plugin ready\n", self.gfid.get());
+        Ok(())
+    }
 }
 
 /// Identity and firmware profile used to allocate an instance.
@@ -195,14 +313,17 @@ impl<'gpu> VgpuInstances<'gpu> {
         let vram_slot = vgpu
             .mm
             .with_locked(|mm| self.alloc_vram_slot(mm, vram_layout))?;
+        let comm = CommBufferRegion::new(vgpu.bar_user, vgpu.mm, &vram_slot.mgmt_heap)?;
 
         Ok(VgpuInstance {
             gfid,
             dbdf,
             vgpu_type,
             vm_pid,
-            chids,
+            num_plugin_channels: PLUGIN_CHANNELS_PER_ENGINE,
+            comm,
             vram_slot,
+            chids,
         })
     }
 
@@ -232,7 +353,8 @@ impl VgpuManagerInner<'_> {
         // Reserve capacity before acquiring resources so registration cannot allocate.
         instances.instances.reserve(1, GFP_KERNEL)?;
 
-        let instance = instances.allocate_instance(self, info)?;
+        let mut instance = instances.allocate_instance(self, info)?;
+        let result = instance.activate(self);
 
         // Register live instances, and failed ones whose resources firmware may still own.
         instances
@@ -240,6 +362,6 @@ impl VgpuManagerInner<'_> {
             .push_within_capacity(instance)
             .map_err(|_| EIO)?;
 
-        Ok(())
+        result
     }
 }

@@ -401,8 +401,8 @@ impl<'a> GspSubtree<'a> {
 #[pin_data]
 pub(crate) struct Gpu<'gpu> {
     pub(crate) spec: Spec,
-    /// Drops before the MM and BAR1 mappings needed for instance teardown.
-    #[uses('bar_user, 'chid_pool)]
+    /// Drops before the MM, BAR1 mappings and GSP needed for instance teardown.
+    #[uses('bar_user, 'gsp_resources, 'chid_pool)]
     vgpu: Option<Pin<KBox<VgpuManager<'mm>>>>,
     /// GSP event interrupt registration, and the enable of its subtree.
     ///
@@ -614,15 +614,16 @@ impl<'gpu> Gpu<'gpu> {
             },
 
             vgpu: {
-                let info = &gsp_resources.boot_result.static_info;
                 match gsp_resources.vgpu_state {
                     VgpuState::Disabled => None,
                     VgpuState::Enabled { .. } => Some(KBox::pin_init(
                         VgpuManager::new(
+                            dev,
+                            &gsp_resources.get_ref().gsp.cmdq,
+                            bar_user.get_ref(),
                             mm.get_ref(),
                             chid_pool.get_ref(),
-                            &info.fifo_engine_list(),
-                            info.vmmu_segment_size,
+                            gsp_resources.static_info(),
                             TOTAL_CHANNELS,
                         ),
                         GFP_KERNEL,

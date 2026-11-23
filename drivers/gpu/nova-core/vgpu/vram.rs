@@ -76,7 +76,6 @@ impl VgpuVramLayout {
 ///
 /// All device accesses and mappings of its regions must end before dropping the slot.
 #[must_use]
-#[expect(dead_code)]
 pub(super) struct VgpuVramSlot {
     /// Framebuffer VRAM region.
     pub(super) fbmem: VramRegion,

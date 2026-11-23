@@ -10,13 +10,16 @@ use core::convert::Infallible;
 
 use kernel::{
     device,
-    prelude::*, //
+    prelude::*,
+    time::Delta,
+    transmute::AsBytes, //
 };
 
 use crate::{
     gsp::{
         cmdq::{
             gmc::{
+                CommandPayload,
                 CommandToGsp,
                 MessageFromGsp,
                 MessagePayload, //
@@ -123,4 +126,34 @@ pub(super) fn query_vgpu_properties(
     } else {
         Ok(properties)
     }
+}
+
+/// The `BOOTLOAD_GSP_VGPU_PLUGIN_TASK` command, which carries NVKV-encoded parameters.
+struct BootloadPluginTask<'a>(&'a [u64]);
+
+impl CommandToGsp for BootloadPluginTask<'_> {
+    const COMMAND: GmcCommandId = GmcCommandId::BootloadGspVgpuPluginTask;
+    type Command = ();
+    type Reply = ();
+    const MAX_REPLY_SIZE: u32 = 0;
+    const COMPLETION_TIMEOUT: Delta = Delta::from_secs(10);
+    type InitError = Infallible;
+
+    fn init(&self) -> impl Init<Self::Command, Self::InitError> {
+        pin_init::init_zeroed()
+    }
+
+    fn variable_payload_len(&self) -> usize {
+        size_of_val(self.0)
+    }
+
+    fn init_variable_payload(&self, dst: &mut CommandPayload<'_>) -> Result {
+        dst.write_all(AsBytes::as_bytes(self.0))
+    }
+}
+
+/// Send BOOTLOAD and check its firmware status.
+pub(super) fn send_bootload(_dev: &device::Device, cmdq: &Cmdq<'_>, payload: &[u64]) -> Result {
+    cmdq.send_gmc_command(BootloadPluginTask(payload), |_| Ok(()))?
+        .map_err(|_| EIO)
 }

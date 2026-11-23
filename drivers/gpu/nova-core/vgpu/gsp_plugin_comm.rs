@@ -10,6 +10,7 @@ use kernel::{
         io_project,
         io_read,
         io_write,
+        Io,
         Mmio, //
     },
     num::casts::FromSafeCast,
@@ -135,6 +136,17 @@ impl<'map, 'gpu> CommBufferRegion<'map, 'gpu> {
                 fw::VGPU_CPU_GSP_KERNEL_TASK_LOG_BUFF_REGION_SIZE,
             )?,
         })
+    }
+
+    /// Clear a previous boot marker before starting the plugin.
+    pub(super) fn clear_plugin_ready(&self) -> Result {
+        let seq_num = io_project!(self.view()?, .control.__bindgen_anon_1.message_seq_num);
+
+        seq_num.write_val(0);
+        // Complete the posted clear before firmware can publish its new marker.
+        seq_num.read_val();
+
+        Ok(())
     }
 
     /// Return whether firmware has published the plugin boot marker.
